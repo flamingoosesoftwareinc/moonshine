@@ -65,15 +65,19 @@ func scanMacroTable(macroTable []byte) ([]constant, error) {
 			continue
 		}
 
-		c := constant(macroName)
-		shim := c.asCShimConst()
-		goName, err := c.goConstName()
+		cName := toCName(macroName)
+		goName, err := toGoName(macroName)
 		if err != nil {
 			return nil, err
 		}
 
+		c := constant{
+			CName:  cName,
+			GoName: goName,
+		}
+
 		constants = append(constants, c)
-		fmt.Printf("name=%q replacement=%q output=\" const %s = %s\"\n", macroName, replacement, goName, shim)
+		fmt.Printf("name=%q replacement=%q output=\" const %s = %s\"\n", macroName, replacement, goName, cName)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("reading preprocessor output failed: %w", err)
@@ -95,13 +99,16 @@ func isStructuralMacro(macroName string) bool {
 	return ok
 }
 
-type constant string
+type constant struct {
+	CName  string
+	GoName string
+}
 
-func (c constant) asCShimConst() string {
+func toCName(c string) string {
 	return "C." + string(c)
 }
 
-func (c constant) goConstName() (string, error) {
+func toGoName(c string) (string, error) {
 	tokens, err := tokenize.Tokenize(string(c))
 	if err != nil {
 		return "", fmt.Errorf("failed to tokenize %s: %w", c, err)
