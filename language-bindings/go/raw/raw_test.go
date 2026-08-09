@@ -7,7 +7,7 @@ import (
 )
 
 func TestMoonshineHeaderVersion(t *testing.T) {
-	if got, want := raw.MoonshineHeaderVersion, int32(30000); got != want {
+	if got, want := raw.MoonshineHeaderVersion, 30000; got != want {
 		t.Fatalf("HeaderVersion = %d, want %d", got, want)
 	}
 }
