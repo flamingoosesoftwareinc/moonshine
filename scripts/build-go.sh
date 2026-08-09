@@ -6,6 +6,10 @@ CORE_DIR="${REPO_ROOT_DIR}/core"
 CORE_BUILD_DIR="${CORE_DIR}/build"
 GO_DIR="${REPO_ROOT_DIR}/language-bindings/go"
 
+# Native parity tests load the same Tiny English fixture used by the Swift and
+# Android bindings. The fetch is idempotent and downloads only this model.
+"${SCRIPTS_DIR}/fetch-voice-assets.sh" tiny-en
+
 # Generate the host-native shared library consumed by cgo. Building only the
 # moonshine target avoids compiling the core test executables for a binding
 # build.

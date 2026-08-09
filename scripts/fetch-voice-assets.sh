@@ -12,6 +12,7 @@
 #
 # Usage:
 #   scripts/fetch-voice-assets.sh              # test-assets + tts
+#   scripts/fetch-voice-assets.sh tiny-en
 #   scripts/fetch-voice-assets.sh test-assets
 #   scripts/fetch-voice-assets.sh tts
 #   scripts/fetch-voice-assets.sh android-test
@@ -82,8 +83,8 @@ fetch_cdn() {
   fetch_url "${CDN_BASE}/${rel}" "${dest}"
 }
 
-fetch_test_assets() {
-  echo "=== test-assets (CDN) ==="
+fetch_tiny_en() {
+  echo "=== Tiny English test assets (CDN) ==="
   local ta="${ROOT}/test-assets"
 
   fetch_cdn "model/tiny-en/quantized/tiny-en/encoder_model.ort" \
@@ -94,6 +95,13 @@ fetch_test_assets() {
     "${ta}/tiny-en/decoder_with_attention.ort"
   fetch_cdn "model/tiny-en/quantized/tiny-en/tokenizer.bin" \
     "${ta}/tiny-en/tokenizer.bin"
+}
+
+fetch_test_assets() {
+  echo "=== test-assets (CDN) ==="
+  local ta="${ROOT}/test-assets"
+
+  fetch_tiny_en
 
   for f in adapter.ort cross_kv.ort decoder_kv.ort decoder_kv_with_attention.ort \
            encoder.ort frontend.ort streaming_config.json tokenizer.bin; do
@@ -247,6 +255,7 @@ fetch_tts() {
 TARGET="${1:-all}"
 case "${TARGET}" in
   -h|--help) usage 0 ;;
+  tiny-en) need_cmd curl; fetch_tiny_en ;;
   test-assets) need_cmd curl; fetch_test_assets ;;
   tts) fetch_tts ;;
   android-test) need_cmd curl; fetch_android_test ;;

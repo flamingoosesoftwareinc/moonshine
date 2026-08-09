@@ -1,7 +1,10 @@
 package moonshine
 
 import (
+	"runtime"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,6 +20,7 @@ type fakeTranscriberBindings struct {
 	memory       [][][]byte
 	memorySizes  [][]uint64
 	freed        []int32
+	freedHandle  chan int32
 }
 
 func (f *fakeTranscriberBindings) loadTranscriberFromMemoryFiles(
@@ -43,6 +47,9 @@ func (f *fakeTranscriberBindings) loadTranscriberFromFiles(path string, modelArc
 
 func (f *fakeTranscriberBindings) freeTranscriber(handle int32) {
 	f.freed = append(f.freed, handle)
+	if f.freedHandle != nil {
+		f.freedHandle <- handle
+	}
 }
 
 func (f *fakeTranscriberBindings) errorToString(int32) string {
@@ -80,6 +87,53 @@ func TestNewTranscriberReturnsLoadError(t *testing.T) {
 func TestNilTranscriberClose(t *testing.T) {
 	var transcriber *Transcriber
 	require.NoError(t, transcriber.Close())
+}
+
+func TestTranscriberCloseIsConcurrentAndIdempotent(t *testing.T) {
+	bindings := &fakeTranscriberBindings{handle: 42}
+	transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+	require.NoError(t, err)
+
+	var wait sync.WaitGroup
+	for range 32 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_ = transcriber.Close()
+		}()
+	}
+	wait.Wait()
+
+	assert.Equal(t, []int32{42}, bindings.freed)
+}
+
+func TestTranscriberFinalizerReleasesAbandonedHandle(t *testing.T) {
+	bindings := &fakeTranscriberBindings{
+		handle:      42,
+		freedHandle: make(chan int32, 1),
+	}
+	abandonTranscriber(t, bindings)
+
+	deadline := time.After(5 * time.Second)
+	for {
+		runtime.GC()
+		select {
+		case handle := <-bindings.freedHandle:
+			assert.Equal(t, int32(42), handle)
+			return
+		case <-deadline:
+			t.Fatal("transcriber finalizer did not release the native handle")
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+func abandonTranscriber(t *testing.T, bindings transcriberBindings) {
+	t.Helper()
+	transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+	require.NoError(t, err)
+	runtime.KeepAlive(transcriber)
 }
 
 func TestNewTranscriberFromMemorySortsAndRetainsFilesUntilClose(t *testing.T) {

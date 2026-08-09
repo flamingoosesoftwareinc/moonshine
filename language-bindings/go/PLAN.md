@@ -173,8 +173,8 @@ Tests:
 - Native: invalid/missing model paths map to the correct sentinel.
 
 Status: files-based and memory-file construction, options, error sentinels,
-pinned memory ownership, and idempotent close exist. Native parity tests and
-finalizer/concurrent-close coverage remain.
+pinned memory ownership, idempotent/concurrent close, finalizer fallback, and
+native files/memory lifecycle coverage exist.
 
 ### 5. Version
 
