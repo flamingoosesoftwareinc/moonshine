@@ -1,9 +1,10 @@
 package moonshine
 
 import (
-	"slices"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type fakeTranscriberBindings struct {
@@ -27,41 +28,23 @@ func TestNewTranscriberLoadsAndClosesNativeHandle(t *testing.T) {
 	bindings := &fakeTranscriberBindings{handle: 42}
 
 	transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
-	if err != nil {
-		t.Fatalf("NewTranscriber() error = %v", err)
-	}
-
-	if got, want := bindings.paths, []string{"/models/tiny-en"}; !slices.Equal(got, want) {
-		t.Fatalf("load paths = %v, want %v", got, want)
-	}
-	if got, want := bindings.arches, []uint32{uint32(ModelArchTiny)}; !slices.Equal(got, want) {
-		t.Fatalf("model arches = %v, want %v", got, want)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/models/tiny-en"}, bindings.paths)
+	assert.Equal(t, []uint32{uint32(ModelArchTiny)}, bindings.arches)
 
 	transcriber.Close()
 	transcriber.Close()
 
-	if got, want := bindings.freed, []int32{42}; !slices.Equal(got, want) {
-		t.Fatalf("freed handles = %v, want %v", got, want)
-	}
+	assert.Equal(t, []int32{42}, bindings.freed)
 }
 
 func TestNewTranscriberReturnsLoadError(t *testing.T) {
 	bindings := &fakeTranscriberBindings{handle: rawErrorInvalidArgument}
 
 	transcriber, err := newTranscriber(bindings, "/missing", ModelArchBase)
-	if err == nil {
-		t.Fatal("NewTranscriber() error = nil, want load error")
-	}
-	if transcriber != nil {
-		t.Fatalf("NewTranscriber() transcriber = %v, want nil", transcriber)
-	}
-	if !strings.Contains(err.Error(), "error code -3") {
-		t.Fatalf("NewTranscriber() error = %q, want error code", err)
-	}
-	if len(bindings.freed) != 0 {
-		t.Fatalf("freed handles = %v, want none", bindings.freed)
-	}
+	require.EqualError(t, err, `moonshine: load transcriber from "/missing": error code -3`)
+	assert.Nil(t, transcriber)
+	assert.Empty(t, bindings.freed)
 }
 
 func TestNilTranscriberClose(t *testing.T) {

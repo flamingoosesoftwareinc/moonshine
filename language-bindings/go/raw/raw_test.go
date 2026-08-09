@@ -4,10 +4,9 @@ import (
 	"testing"
 
 	"github.com/moonshine-ai/moonshine/language-bindings/go/raw"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMoonshineHeaderVersion(t *testing.T) {
-	if got, want := raw.MoonshineHeaderVersion, 30000; got != want {
-		t.Fatalf("HeaderVersion = %d, want %d", got, want)
-	}
+	assert.Equal(t, 30000, raw.MoonshineHeaderVersion)
 }
