@@ -3,6 +3,7 @@ package moonshine
 import (
 	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"unsafe"
@@ -12,6 +13,13 @@ import (
 
 type transcriberBindings interface {
 	loadTranscriberFromFiles(path string, modelArch uint32, options []Option) int32
+	loadTranscriberFromMemoryFiles(
+		filenames []string,
+		memory [][]byte,
+		memorySizes []uint64,
+		modelArch uint32,
+		options []Option,
+	) int32
 	freeTranscriber(handle int32)
 	errorToString(code int32) string
 }
@@ -22,6 +30,26 @@ func (rawTranscriberBindings) loadTranscriberFromFiles(path string, modelArch ui
 	converted := rawOptions(options)
 	return raw.MoonshineLoadTranscriberFromFiles(
 		path,
+		modelArch,
+		converted,
+		uint64(len(converted)),
+		raw.MoonshineHeaderVersion,
+	)
+}
+
+func (rawTranscriberBindings) loadTranscriberFromMemoryFiles(
+	filenames []string,
+	memory [][]byte,
+	memorySizes []uint64,
+	modelArch uint32,
+	options []Option,
+) int32 {
+	converted := rawOptions(options)
+	return raw.MoonshineLoadTranscriberFromMemoryFiles(
+		filenames,
+		memory,
+		memorySizes,
+		uint64(len(filenames)),
 		modelArch,
 		converted,
 		uint64(len(converted)),
@@ -60,12 +88,22 @@ func copyCString(pointer *byte) string {
 type Transcriber struct {
 	bindings  transcriberBindings
 	handle    int32
+	memory    [][]byte
+	pinner    *runtime.Pinner
 	closeOnce sync.Once
 }
 
 // NewTranscriber loads a transcriber from model files beneath modelPath.
 func NewTranscriber(modelPath string, modelArch ModelArch, options ...Option) (*Transcriber, error) {
 	return newTranscriber(rawTranscriberBindings{}, modelPath, modelArch, options...)
+}
+
+// NewTranscriberFromMemory loads a transcriber from model assets keyed by
+// their canonical filenames. Non-empty buffers are pinned until Close because
+// the native library retains pointers to them for the transcriber's lifetime.
+// Callers must not modify the buffers until the transcriber is closed.
+func NewTranscriberFromMemory(files map[string][]byte, modelArch ModelArch, options ...Option) (*Transcriber, error) {
+	return newTranscriberFromMemory(rawTranscriberBindings{}, files, modelArch, options...)
 }
 
 func newTranscriber(bindings transcriberBindings, modelPath string, modelArch ModelArch, options ...Option) (*Transcriber, error) {
@@ -93,19 +131,83 @@ func newTranscriber(bindings transcriberBindings, modelPath string, modelArch Mo
 	return transcriber, nil
 }
 
+func newTranscriberFromMemory(
+	bindings transcriberBindings,
+	files map[string][]byte,
+	modelArch ModelArch,
+	options ...Option,
+) (*Transcriber, error) {
+	if err := validateOptions(options); err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("model file map is empty: %w", ErrInvalidArgument)
+	}
+
+	filenames := make([]string, 0, len(files))
+	for filename := range files {
+		if filename == "" || strings.IndexByte(filename, 0) >= 0 {
+			return nil, fmt.Errorf("invalid model filename %q: %w", filename, ErrInvalidArgument)
+		}
+		filenames = append(filenames, filename)
+	}
+	sort.Strings(filenames)
+
+	memory := make([][]byte, len(filenames))
+	memorySizes := make([]uint64, len(filenames))
+	pinner := new(runtime.Pinner)
+	for index, filename := range filenames {
+		memory[index] = files[filename]
+		memorySizes[index] = uint64(len(memory[index]))
+		if len(memory[index]) > 0 {
+			pinner.Pin(&memory[index][0])
+		}
+	}
+
+	handle := bindings.loadTranscriberFromMemoryFiles(
+		filenames,
+		memory,
+		memorySizes,
+		uint32(modelArch),
+		options,
+	)
+	if handle < 0 {
+		pinner.Unpin()
+		return nil, fmt.Errorf(
+			"moonshine: load transcriber from memory: %w",
+			nativeError(handle, bindings.errorToString(handle)),
+		)
+	}
+
+	transcriber := &Transcriber{
+		bindings: bindings,
+		handle:   handle,
+		memory:   memory,
+		pinner:   pinner,
+	}
+	runtime.SetFinalizer(transcriber, (*Transcriber).finalize)
+	return transcriber, nil
+}
+
 // Close releases the native transcriber. It is safe to call Close more than
 // once.
-func (t *Transcriber) Close() {
+func (t *Transcriber) Close() error {
 	if t == nil {
-		return
+		return nil
 	}
 
 	t.closeOnce.Do(func() {
 		runtime.SetFinalizer(t, nil)
 		t.bindings.freeTranscriber(t.handle)
+		if t.pinner != nil {
+			t.pinner.Unpin()
+			t.pinner = nil
+		}
+		t.memory = nil
 	})
+	return nil
 }
 
 func (t *Transcriber) finalize() {
-	t.Close()
+	_ = t.Close()
 }

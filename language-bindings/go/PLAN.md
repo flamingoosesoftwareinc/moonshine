@@ -172,8 +172,9 @@ Tests:
 - Native: load Tiny English from a memory-file map and close it.
 - Native: invalid/missing model paths map to the correct sentinel.
 
-Status: basic files-based construction and idempotent close exist. Options,
-error sentinels, memory construction, and native parity tests remain.
+Status: files-based and memory-file construction, options, error sentinels,
+pinned memory ownership, and idempotent close exist. Native parity tests and
+finalizer/concurrent-close coverage remain.
 
 ### 5. Version
 

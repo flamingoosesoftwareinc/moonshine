@@ -13,7 +13,25 @@ type fakeTranscriberBindings struct {
 	paths        []string
 	arches       []uint32
 	options      [][]Option
+	filenames    [][]string
+	memory       [][][]byte
+	memorySizes  [][]uint64
 	freed        []int32
+}
+
+func (f *fakeTranscriberBindings) loadTranscriberFromMemoryFiles(
+	filenames []string,
+	memory [][]byte,
+	memorySizes []uint64,
+	modelArch uint32,
+	options []Option,
+) int32 {
+	f.filenames = append(f.filenames, append([]string(nil), filenames...))
+	f.memory = append(f.memory, append([][]byte(nil), memory...))
+	f.memorySizes = append(f.memorySizes, append([]uint64(nil), memorySizes...))
+	f.arches = append(f.arches, modelArch)
+	f.options = append(f.options, append([]Option(nil), options...))
+	return f.handle
 }
 
 func (f *fakeTranscriberBindings) loadTranscriberFromFiles(path string, modelArch uint32, options []Option) int32 {
@@ -41,8 +59,8 @@ func TestNewTranscriberLoadsAndClosesNativeHandle(t *testing.T) {
 	assert.Equal(t, []uint32{uint32(ModelArchTiny)}, bindings.arches)
 	assert.Equal(t, [][]Option{options}, bindings.options)
 
-	transcriber.Close()
-	transcriber.Close()
+	require.NoError(t, transcriber.Close())
+	require.NoError(t, transcriber.Close())
 
 	assert.Equal(t, []int32{42}, bindings.freed)
 }
@@ -61,7 +79,80 @@ func TestNewTranscriberReturnsLoadError(t *testing.T) {
 
 func TestNilTranscriberClose(t *testing.T) {
 	var transcriber *Transcriber
-	transcriber.Close()
+	require.NoError(t, transcriber.Close())
+}
+
+func TestNewTranscriberFromMemorySortsAndRetainsFilesUntilClose(t *testing.T) {
+	bindings := &fakeTranscriberBindings{handle: 42}
+	files := map[string][]byte{
+		"tokenizer.bin":            {5},
+		"encoder_model.ort":        {1, 2},
+		"decoder_model_merged.ort": {3, 4, 5},
+	}
+	options := []Option{{Name: "word_timestamps", Value: "true"}}
+
+	transcriber, err := newTranscriberFromMemory(bindings, files, ModelArchTiny, options...)
+	require.NoError(t, err)
+	require.NotNil(t, transcriber)
+
+	assert.Equal(t, [][]string{{
+		"decoder_model_merged.ort",
+		"encoder_model.ort",
+		"tokenizer.bin",
+	}}, bindings.filenames)
+	assert.Equal(t, [][][]byte{{{3, 4, 5}, {1, 2}, {5}}}, bindings.memory)
+	assert.Equal(t, [][]uint64{{3, 2, 1}}, bindings.memorySizes)
+	assert.Equal(t, []uint32{uint32(ModelArchTiny)}, bindings.arches)
+	assert.Equal(t, [][]Option{options}, bindings.options)
+	assert.Len(t, transcriber.memory, 3)
+	assert.NotNil(t, transcriber.pinner)
+
+	require.NoError(t, transcriber.Close())
+	assert.Nil(t, transcriber.memory)
+	assert.Nil(t, transcriber.pinner)
+	assert.Equal(t, []int32{42}, bindings.freed)
+}
+
+func TestNewTranscriberFromMemoryRejectsInvalidFilesBeforeNativeCall(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string][]byte
+	}{
+		{name: "nil"},
+		{name: "empty", files: map[string][]byte{}},
+		{name: "empty filename", files: map[string][]byte{"": {1}}},
+		{name: "NUL filename", files: map[string][]byte{"bad\x00name": {1}}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bindings := &fakeTranscriberBindings{handle: 42}
+
+			transcriber, err := newTranscriberFromMemory(bindings, test.files, ModelArchTiny)
+
+			require.ErrorIs(t, err, ErrInvalidArgument)
+			assert.Nil(t, transcriber)
+			assert.Empty(t, bindings.filenames)
+			assert.Empty(t, bindings.freed)
+		})
+	}
+}
+
+func TestNewTranscriberFromMemoryReleasesPinsAfterLoadError(t *testing.T) {
+	bindings := &fakeTranscriberBindings{
+		handle:       rawErrorInvalidArgument,
+		errorMessage: "Invalid argument",
+	}
+
+	transcriber, err := newTranscriberFromMemory(
+		bindings,
+		map[string][]byte{"encoder_model.ort": {1}},
+		ModelArchTiny,
+	)
+
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Nil(t, transcriber)
+	assert.Empty(t, bindings.freed)
 }
 
 func TestNewTranscriberRejectsInvalidInputBeforeNativeCall(t *testing.T) {
