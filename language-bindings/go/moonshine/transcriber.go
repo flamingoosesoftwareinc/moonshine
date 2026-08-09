@@ -20,6 +20,12 @@ type transcriberBindings interface {
 		modelArch uint32,
 		options []Option,
 	) int32
+	transcribeWithoutStreaming(
+		handle int32,
+		audio []float32,
+		sampleRate int32,
+		flags uint32,
+	) (Transcript, int32, error)
 	freeTranscriber(handle int32)
 	errorToString(code int32) string
 }
@@ -57,6 +63,33 @@ func (rawTranscriberBindings) loadTranscriberFromMemoryFiles(
 	)
 }
 
+func (rawTranscriberBindings) transcribeWithoutStreaming(
+	handle int32,
+	audio []float32,
+	sampleRate int32,
+	flags uint32,
+) (Transcript, int32, error) {
+	output := [][]raw.TranscriptT{make([]raw.TranscriptT, 1)}
+	code := raw.MoonshineTranscribeWithoutStreaming(
+		handle,
+		audio,
+		uint64(len(audio)),
+		sampleRate,
+		flags,
+		output,
+	)
+	if code < 0 {
+		return Transcript{}, code, nil
+	}
+
+	materialized, err := materializeRawTranscript(output[0][0])
+	if err != nil {
+		return Transcript{}, code, err
+	}
+	transcript, err := copyRawTranscript(materialized)
+	return transcript, code, err
+}
+
 func (rawTranscriberBindings) freeTranscriber(handle int32) {
 	raw.MoonshineFreeTranscriber(handle)
 }
@@ -90,6 +123,8 @@ type Transcriber struct {
 	handle    int32
 	memory    [][]byte
 	pinner    *runtime.Pinner
+	mu        sync.RWMutex
+	closed    bool
 	closeOnce sync.Once
 }
 
@@ -197,7 +232,11 @@ func (t *Transcriber) Close() error {
 	}
 
 	t.closeOnce.Do(func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+
 		runtime.SetFinalizer(t, nil)
+		t.closed = true
 		t.bindings.freeTranscriber(t.handle)
 		if t.pinner != nil {
 			t.pinner.Unpin()
@@ -206,6 +245,46 @@ func (t *Transcriber) Close() error {
 		t.memory = nil
 	})
 	return nil
+}
+
+// Transcribe transcribes a complete mono float-PCM audio buffer. The returned
+// transcript owns all of its strings and slices and remains valid after later
+// calls and after the transcriber is closed.
+func (t *Transcriber) Transcribe(
+	audio []float32,
+	sampleRate int,
+	flags ...TranscribeFlags,
+) (Transcript, error) {
+	if t == nil {
+		return Transcript{}, ErrClosed
+	}
+	if sampleRate <= 0 || uint64(sampleRate) > uint64(^uint32(0)>>1) {
+		return Transcript{}, fmt.Errorf("invalid sample rate %d: %w", sampleRate, ErrInvalidArgument)
+	}
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.closed {
+		return Transcript{}, ErrClosed
+	}
+
+	transcript, code, err := t.bindings.transcribeWithoutStreaming(
+		t.handle,
+		audio,
+		int32(sampleRate),
+		combineTranscribeFlags(flags),
+	)
+	runtime.KeepAlive(t)
+	if code < 0 {
+		return Transcript{}, fmt.Errorf(
+			"moonshine: transcribe audio: %w",
+			nativeError(code, t.bindings.errorToString(code)),
+		)
+	}
+	if err != nil {
+		return Transcript{}, fmt.Errorf("moonshine: copy transcript: %w", err)
+	}
+	return transcript, nil
 }
 
 func (t *Transcriber) finalize() {

@@ -3,9 +3,70 @@ package moonshine
 import (
 	"bytes"
 	"fmt"
+	"unsafe"
 
 	"github.com/moonshine-ai/moonshine/language-bindings/go/raw"
 )
+
+func materializeRawTranscript(source raw.TranscriptT) (raw.TranscriptT, error) {
+	source.Deref()
+	lineCount, err := nativeSliceLength("transcript lines", source.LineCount)
+	if err != nil {
+		return raw.TranscriptT{}, err
+	}
+	source.Lines = make([]raw.TranscriptLineT, lineCount)
+	source.Deref()
+
+	for lineIndex := range source.Lines {
+		line := &source.Lines[lineIndex]
+		line.Deref()
+
+		audioCount, err := nativeSliceLength("audio samples", line.AudioDataCount)
+		if err != nil {
+			return raw.TranscriptT{}, fmt.Errorf("transcript line %d: %w", lineIndex, err)
+		}
+		spanCount, err := nativeSliceLength("speaker spans", line.SpeakerSpanCount)
+		if err != nil {
+			return raw.TranscriptT{}, fmt.Errorf("transcript line %d: %w", lineIndex, err)
+		}
+		wordCount, err := nativeSliceLength("words", line.WordCount)
+		if err != nil {
+			return raw.TranscriptT{}, fmt.Errorf("transcript line %d: %w", lineIndex, err)
+		}
+
+		text := copyCString(unsafe.SliceData(line.Text))
+		line.Text = make([]byte, len(text))
+		line.AudioData = nativeFloat32Slice(unsafe.SliceData(line.AudioData), audioCount)
+		line.SpeakerSpans = make([]raw.SpeakerSpanT, spanCount)
+		line.Words = make([]raw.TranscriptWordT, wordCount)
+		line.Deref()
+
+		for spanIndex := range line.SpeakerSpans {
+			line.SpeakerSpans[spanIndex].Deref()
+		}
+		for wordIndex := range line.Words {
+			word := &line.Words[wordIndex]
+			word.Deref()
+			word.Text = []byte(copyCString(unsafe.SliceData(word.Text)))
+		}
+	}
+	return source, nil
+}
+
+func nativeSliceLength(name string, count uint64) (int, error) {
+	maxInt := uint64(^uint(0) >> 1)
+	if count > maxInt {
+		return 0, fmt.Errorf("native %s count %d overflows int: %w", name, count, ErrInvalidArgument)
+	}
+	return int(count), nil
+}
+
+func nativeFloat32Slice(pointer *float32, length int) []float32 {
+	if length == 0 {
+		return nil
+	}
+	return unsafe.Slice(pointer, length)
+}
 
 func copyRawTranscript(source raw.TranscriptT) (Transcript, error) {
 	lineCount, err := checkedNativeCount("transcript lines", source.LineCount, len(source.Lines))

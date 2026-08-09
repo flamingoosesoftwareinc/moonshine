@@ -49,6 +49,17 @@ func TestNativeTranscriberRejectsMissingModelPath(t *testing.T) {
 	assert.Nil(t, transcriber)
 }
 
+func TestNativeTranscriberEmptyAudio(t *testing.T) {
+	transcriber, err := NewTranscriber(tinyEnglishModelPath(t), ModelArchTiny)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+
+	transcript, err := transcriber.Transcribe(nil, 16000)
+
+	require.NoError(t, err)
+	assert.Empty(t, transcript.Lines)
+}
+
 func tinyEnglishModelPath(t *testing.T) string {
 	t.Helper()
 

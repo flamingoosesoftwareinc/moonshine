@@ -1,6 +1,7 @@
 package moonshine
 
 import (
+	"fmt"
 	"runtime"
 	"sync"
 	"testing"
@@ -11,16 +12,34 @@ import (
 )
 
 type fakeTranscriberBindings struct {
-	handle       int32
-	errorMessage string
-	paths        []string
-	arches       []uint32
-	options      [][]Option
-	filenames    [][]string
-	memory       [][][]byte
-	memorySizes  [][]uint64
-	freed        []int32
-	freedHandle  chan int32
+	handle          int32
+	errorMessage    string
+	paths           []string
+	arches          []uint32
+	options         [][]Option
+	filenames       [][]string
+	memory          [][][]byte
+	memorySizes     [][]uint64
+	transcript      Transcript
+	transcribeCode  int32
+	transcribeErr   error
+	transcribeAudio [][]float32
+	transcribeRates []int32
+	transcribeFlags []uint32
+	freed           []int32
+	freedHandle     chan int32
+}
+
+func (f *fakeTranscriberBindings) transcribeWithoutStreaming(
+	_ int32,
+	audio []float32,
+	sampleRate int32,
+	flags uint32,
+) (Transcript, int32, error) {
+	f.transcribeAudio = append(f.transcribeAudio, append([]float32(nil), audio...))
+	f.transcribeRates = append(f.transcribeRates, sampleRate)
+	f.transcribeFlags = append(f.transcribeFlags, flags)
+	return f.transcript, f.transcribeCode, f.transcribeErr
 }
 
 func (f *fakeTranscriberBindings) loadTranscriberFromMemoryFiles(
@@ -207,6 +226,74 @@ func TestNewTranscriberFromMemoryReleasesPinsAfterLoadError(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidArgument)
 	assert.Nil(t, transcriber)
 	assert.Empty(t, bindings.freed)
+}
+
+func TestTranscriberTranscribeForwardsAudioAndFlags(t *testing.T) {
+	want := Transcript{Lines: []TranscriptLine{{Text: "hello"}}}
+	bindings := &fakeTranscriberBindings{handle: 42, transcript: want}
+	transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+
+	got, err := transcriber.Transcribe(
+		[]float32{0.25, -0.5},
+		16000,
+		FlagForceUpdate,
+		FlagSpellingMode,
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	assert.Equal(t, [][]float32{{0.25, -0.5}}, bindings.transcribeAudio)
+	assert.Equal(t, []int32{16000}, bindings.transcribeRates)
+	assert.Equal(t, []uint32{uint32(FlagForceUpdate | FlagSpellingMode)}, bindings.transcribeFlags)
+}
+
+func TestTranscriberTranscribeMapsNativeError(t *testing.T) {
+	bindings := &fakeTranscriberBindings{
+		handle:         42,
+		transcribeCode: rawErrorInvalidArgument,
+		errorMessage:   "Invalid argument",
+	}
+	transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+
+	_, err = transcriber.Transcribe(nil, 16000)
+
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
+func TestTranscriberTranscribeRejectsInvalidStateAndSampleRate(t *testing.T) {
+	t.Run("nil", func(t *testing.T) {
+		var transcriber *Transcriber
+		_, err := transcriber.Transcribe(nil, 16000)
+		require.ErrorIs(t, err, ErrClosed)
+	})
+
+	t.Run("closed", func(t *testing.T) {
+		bindings := &fakeTranscriberBindings{handle: 42}
+		transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+		require.NoError(t, err)
+		require.NoError(t, transcriber.Close())
+
+		_, err = transcriber.Transcribe(nil, 16000)
+		require.ErrorIs(t, err, ErrClosed)
+		assert.Empty(t, bindings.transcribeRates)
+	})
+
+	for _, sampleRate := range []int{0, -1, int(^uint32(0)>>1) + 1} {
+		t.Run(fmt.Sprintf("sample rate %d", sampleRate), func(t *testing.T) {
+			bindings := &fakeTranscriberBindings{handle: 42}
+			transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+
+			_, err = transcriber.Transcribe(nil, sampleRate)
+			require.ErrorIs(t, err, ErrInvalidArgument)
+			assert.Empty(t, bindings.transcribeRates)
+		})
+	}
 }
 
 func TestNewTranscriberRejectsInvalidInputBeforeNativeCall(t *testing.T) {
