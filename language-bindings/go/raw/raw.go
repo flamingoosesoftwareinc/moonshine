@@ -6,4 +6,4 @@ package raw
 */
 import "C"
 
-const MoonshineHeaderVersion = int32(C.MOONSHINE_HEADER_VERSION)
+const MoonshineHeaderVersion = C.MOONSHINE_HEADER_VERSION
