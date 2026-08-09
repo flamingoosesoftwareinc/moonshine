@@ -3,6 +3,7 @@ package moonshine
 import (
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -10,19 +11,20 @@ import (
 )
 
 type transcriberBindings interface {
-	loadTranscriberFromFiles(path string, modelArch uint32) int32
+	loadTranscriberFromFiles(path string, modelArch uint32, options []Option) int32
 	freeTranscriber(handle int32)
 	errorToString(code int32) string
 }
 
 type rawTranscriberBindings struct{}
 
-func (rawTranscriberBindings) loadTranscriberFromFiles(path string, modelArch uint32) int32 {
+func (rawTranscriberBindings) loadTranscriberFromFiles(path string, modelArch uint32, options []Option) int32 {
+	converted := rawOptions(options)
 	return raw.MoonshineLoadTranscriberFromFiles(
 		path,
 		modelArch,
-		nil,
-		0,
+		converted,
+		uint64(len(converted)),
 		raw.MoonshineHeaderVersion,
 	)
 }
@@ -62,12 +64,19 @@ type Transcriber struct {
 }
 
 // NewTranscriber loads a transcriber from model files beneath modelPath.
-func NewTranscriber(modelPath string, modelArch ModelArch) (*Transcriber, error) {
-	return newTranscriber(rawTranscriberBindings{}, modelPath, modelArch)
+func NewTranscriber(modelPath string, modelArch ModelArch, options ...Option) (*Transcriber, error) {
+	return newTranscriber(rawTranscriberBindings{}, modelPath, modelArch, options...)
 }
 
-func newTranscriber(bindings transcriberBindings, modelPath string, modelArch ModelArch) (*Transcriber, error) {
-	handle := bindings.loadTranscriberFromFiles(modelPath, uint32(modelArch))
+func newTranscriber(bindings transcriberBindings, modelPath string, modelArch ModelArch, options ...Option) (*Transcriber, error) {
+	if err := validateOptions(options); err != nil {
+		return nil, err
+	}
+	if strings.IndexByte(modelPath, 0) >= 0 {
+		return nil, fmt.Errorf("model path contains a NUL: %w", ErrInvalidArgument)
+	}
+
+	handle := bindings.loadTranscriberFromFiles(modelPath, uint32(modelArch), options)
 	if handle < 0 {
 		return nil, fmt.Errorf(
 			"moonshine: load transcriber from %q: %w",

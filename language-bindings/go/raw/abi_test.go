@@ -82,8 +82,8 @@ func TestGeneratedConstantsMatchCAPISemantics(t *testing.T) {
 
 func TestGeneratedStructFieldsRemainAvailable(t *testing.T) {
 	option := raw.MoonshineOptionT{}
-	option.Name = []byte("name")
-	option.Value = []byte("value")
+	option.Name = []byte("name\x00")
+	option.Value = []byte("value\x00")
 
 	word := raw.TranscriptWordT{}
 	word.Text = []byte("word")
@@ -129,7 +129,7 @@ func TestGeneratedStructFieldsRemainAvailable(t *testing.T) {
 	clip.IsComplete = 1
 	clip.Transcript = []byte("clip")
 
-	assert.Equal(t, []byte("name"), option.Name)
+	assert.Equal(t, []byte("name\x00"), option.Name)
 	assert.Equal(t, uint64(1), transcript.LineCount)
 	assert.Equal(t, []byte("clip"), clip.Transcript)
 }
