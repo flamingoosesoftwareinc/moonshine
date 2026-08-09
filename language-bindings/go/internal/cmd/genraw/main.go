@@ -41,6 +41,60 @@ func run(header, output string) error {
 	return err
 }
 
+func scanMacroTable(macroTable []byte) ([]constant, error) {
+	constants := make([]constant, 0, 64)
+	scanner := bufio.NewScanner(strings.NewReader(string(macroTable)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "#define MOONSHINE_") {
+			continue
+		}
+
+		macroDef := strings.TrimPrefix(line, "#define ")
+		macroName, replacement, found := strings.Cut(macroDef, " ")
+		if !found {
+			continue
+		}
+
+		if isStructuralMacro(macroName) {
+			continue
+		}
+
+		replacement = strings.TrimSpace(replacement)
+		if replacement == "" {
+			continue
+		}
+
+		c := constant(macroName)
+		shim := c.asCShimConst()
+		goName, err := c.goConstName()
+		if err != nil {
+			return nil, err
+		}
+
+		constants = append(constants, c)
+		fmt.Printf("name=%q replacement=%q output=\" const %s = %s\"\n", macroName, replacement, goName, shim)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading preprocessor output failed: %w", err)
+	}
+
+	return constants, nil
+}
+
+type zero struct{}
+
+var z = zero{}
+
+var structuralMacros = map[string]struct{}{
+	"MOONSHINE_EXPORT": z,
+}
+
+func isStructuralMacro(macroName string) bool {
+	_, ok := structuralMacros[macroName]
+	return ok
+}
+
 type constant string
 
 func (c constant) asCShimConst() string {
@@ -68,40 +122,4 @@ func camelCase(tokens []string) string {
 	}
 
 	return strings.Join(newTokens, "")
-}
-
-func scanMacroTable(macroTable []byte) ([]constant, error) {
-	constants := make([]constant, 0, 64)
-	scanner := bufio.NewScanner(strings.NewReader(string(macroTable)))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "#define MOONSHINE_") {
-			continue
-		}
-
-		macroDef := strings.TrimPrefix(line, "#define ")
-		macroName, replacement, found := strings.Cut(macroDef, " ")
-		if !found {
-			continue
-		}
-		replacement = strings.TrimSpace(replacement)
-		if replacement == "" {
-			continue
-		}
-
-		c := constant(macroName)
-		shim := c.asCShimConst()
-		goName, err := c.goConstName()
-		if err != nil {
-			fmt.Println(err)
-			continue
-		}
-		constants = append(constants, c)
-		fmt.Printf("name=%q replacement=%q output=\" const %s = %s\"\n", macroName, replacement, goName, shim)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading preprocessor output failed: %w", err)
-	}
-
-	return constants, nil
 }
