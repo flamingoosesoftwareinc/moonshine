@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"unsafe"
 
 	"github.com/moonshine-ai/moonshine/language-bindings/go/raw"
 )
@@ -11,6 +12,7 @@ import (
 type transcriberBindings interface {
 	loadTranscriberFromFiles(path string, modelArch uint32) int32
 	freeTranscriber(handle int32)
+	errorToString(code int32) string
 }
 
 type rawTranscriberBindings struct{}
@@ -27,6 +29,25 @@ func (rawTranscriberBindings) loadTranscriberFromFiles(path string, modelArch ui
 
 func (rawTranscriberBindings) freeTranscriber(handle int32) {
 	raw.MoonshineFreeTranscriber(handle)
+}
+
+func (rawTranscriberBindings) errorToString(code int32) string {
+	return copyCString(raw.MoonshineErrorToString(code))
+}
+
+func copyCString(pointer *byte) string {
+	if pointer == nil {
+		return ""
+	}
+
+	bytes := make([]byte, 0, 64)
+	for offset := uintptr(0); ; offset++ {
+		value := *(*byte)(unsafe.Add(unsafe.Pointer(pointer), offset))
+		if value == 0 {
+			return string(bytes)
+		}
+		bytes = append(bytes, value)
+	}
 }
 
 // Transcriber owns a native Moonshine transcriber handle.
@@ -48,7 +69,11 @@ func NewTranscriber(modelPath string, modelArch ModelArch) (*Transcriber, error)
 func newTranscriber(bindings transcriberBindings, modelPath string, modelArch ModelArch) (*Transcriber, error) {
 	handle := bindings.loadTranscriberFromFiles(modelPath, uint32(modelArch))
 	if handle < 0 {
-		return nil, fmt.Errorf("moonshine: load transcriber from %q: error code %d", modelPath, handle)
+		return nil, fmt.Errorf(
+			"moonshine: load transcriber from %q: %w",
+			modelPath,
+			nativeError(handle, bindings.errorToString(handle)),
+		)
 	}
 
 	transcriber := &Transcriber{

@@ -8,10 +8,11 @@ import (
 )
 
 type fakeTranscriberBindings struct {
-	handle int32
-	paths  []string
-	arches []uint32
-	freed  []int32
+	handle       int32
+	errorMessage string
+	paths        []string
+	arches       []uint32
+	freed        []int32
 }
 
 func (f *fakeTranscriberBindings) loadTranscriberFromFiles(path string, modelArch uint32) int32 {
@@ -22,6 +23,10 @@ func (f *fakeTranscriberBindings) loadTranscriberFromFiles(path string, modelArc
 
 func (f *fakeTranscriberBindings) freeTranscriber(handle int32) {
 	f.freed = append(f.freed, handle)
+}
+
+func (f *fakeTranscriberBindings) errorToString(int32) string {
+	return f.errorMessage
 }
 
 func TestNewTranscriberLoadsAndClosesNativeHandle(t *testing.T) {
@@ -39,12 +44,19 @@ func TestNewTranscriberLoadsAndClosesNativeHandle(t *testing.T) {
 }
 
 func TestNewTranscriberReturnsLoadError(t *testing.T) {
-	bindings := &fakeTranscriberBindings{handle: rawErrorInvalidArgument}
+	bindings := &fakeTranscriberBindings{
+		handle:       rawErrorInvalidArgument,
+		errorMessage: "Invalid argument",
+	}
 
 	transcriber, err := newTranscriber(bindings, "/missing", ModelArchBase)
-	require.EqualError(t, err, `moonshine: load transcriber from "/missing": error code -3`)
+	require.EqualError(t, err, `moonshine: load transcriber from "/missing": moonshine error -3: Invalid argument`)
 	assert.Nil(t, transcriber)
 	assert.Empty(t, bindings.freed)
+
+	var nativeErr *Error
+	require.ErrorAs(t, err, &nativeErr)
+	assert.Equal(t, ErrorInvalidArgument, nativeErr.Code)
 }
 
 func TestNilTranscriberClose(t *testing.T) {
