@@ -10,6 +10,13 @@ Generate the bindings from this directory:
 go generate ./raw
 ```
 
+Verify that committed generated files match the manifest without rewriting the
+working tree:
+
+```sh
+../../scripts/check-go-generated.sh
+```
+
 The generated package includes and links the in-tree Moonshine core. Build the
 native library before linking tests or applications:
 

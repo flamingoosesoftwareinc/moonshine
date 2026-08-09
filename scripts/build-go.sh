@@ -13,7 +13,7 @@ cmake -S "${CORE_DIR}" -B "${CORE_BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release
 cmake --build "${CORE_BUILD_DIR}" --config Release --target moonshine
 
 cd "${GO_DIR}"
-go generate ./raw
+"${SCRIPTS_DIR}/check-go-generated.sh"
 
 # The Go test binary needs to find libmoonshine and Moonshine's vendored ONNX
 # Runtime dependency. Select the latter using the same host mapping as the
