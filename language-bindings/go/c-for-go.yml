@@ -1,0 +1,50 @@
+---
+GENERATOR:
+  PackageName: raw
+  PackageDescription: Package raw provides generated low-level bindings to the Moonshine C API.
+  PackageLicense: |
+    Copyright 2025 Moonshine AI
+
+    SPDX-License-Identifier: MIT
+  FlagGroups:
+    - {name: CFLAGS, flags: ["-I${SRCDIR}/../../../core"]}
+    - {name: LDFLAGS, flags: ["-L${SRCDIR}/../../../core/build", "-lmoonshine"]}
+  Includes:
+    - moonshine-c-api.h
+  Options:
+    SafeStrings: false
+    StructAccessors: false
+    KeepAlive: true
+
+PARSER:
+  # c-for-go's parser currently advertises C23 but cannot parse the C23
+  # nullptr_t declaration in GCC 16's stddef.h. Parse this C API as C17.
+  Defines:
+    __STDC_VERSION__: 201710
+  IncludePaths:
+    - ../../../core
+  SourcesPaths:
+    - ../../../core/moonshine-c-api.h
+
+TRANSLATOR:
+  ConstRules:
+    defines: eval
+  PtrTips:
+    function:
+      # These APIs return an allocated C string through char **. Without this
+      # pointer hint c-for-go treats the output as an array and emits invalid
+      # **uint8_t calls instead of **char calls.
+      - target: "^moonshine_get_(g2p_dependencies|tts_dependencies|tts_voices|stt_dependencies|embedding_dependencies)$"
+        tips: [arr, arr, arr, ref]
+      - target: "^moonshine_get_(diarization_dependencies|stt_catalog|embedding_catalog)$"
+        tips: [ref]
+  Rules:
+    global:
+      - {transform: lower}
+      - {action: accept, from: "^(moonshine_|transcript_|speaker_span_t$)"}
+      - {transform: export}
+    const:
+      - {action: accept, from: "^MOONSHINE_"}
+      - {action: ignore, from: "^(MOONSHINE_C_API_H|MOONSHINE_EXPORT)$"}
+    post-global:
+      - {load: snakecase}

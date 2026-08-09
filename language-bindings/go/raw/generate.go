@@ -1,3 +1,3 @@
 package raw
 
-//go:generate go run ../internal/cmd/genraw -header ../../../core/moonshine-c-api.h -output zz_generated.go
+//go:generate go run github.com/xlab/c-for-go@v1.3.0 -nostamp -out .. ../c-for-go.yml
