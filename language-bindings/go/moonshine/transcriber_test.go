@@ -50,13 +50,9 @@ func TestNewTranscriberReturnsLoadError(t *testing.T) {
 	}
 
 	transcriber, err := newTranscriber(bindings, "/missing", ModelArchBase)
-	require.EqualError(t, err, `moonshine: load transcriber from "/missing": moonshine error -3: Invalid argument`)
+	require.ErrorIs(t, err, ErrInvalidArgument)
 	assert.Nil(t, transcriber)
 	assert.Empty(t, bindings.freed)
-
-	var nativeErr *Error
-	require.ErrorAs(t, err, &nativeErr)
-	assert.Equal(t, ErrorInvalidArgument, nativeErr.Code)
 }
 
 func TestNilTranscriberClose(t *testing.T) {

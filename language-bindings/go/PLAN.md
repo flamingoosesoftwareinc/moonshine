@@ -87,7 +87,7 @@ Files may be split further when a module becomes deep enough to warrant it.
   the public boundary and checked before conversion to `int32`.
 - Native handles remain private.
 - Public result structs contain only Go-owned strings and slices.
-- Methods return typed errors wrapping a stable native error code.
+- Methods wrap stable sentinel errors while preserving native diagnostic text.
 - Methods on a closed owner return `ErrClosed` and never call C.
 - Concurrent-use guarantees must be documented per owner. `Close` must be safe
   to call concurrently and more than once.
@@ -113,22 +113,21 @@ must be committed immediately beforehand.
 Public API:
 
 ```go
-type ErrorCode int32
-type Error struct { Code ErrorCode; Message string }
-var ErrClosed error
-func (e *Error) Error() string
-func (e *Error) Is(target error) bool
+var ErrUnknown = errors.New("moonshine: unknown error")
+var ErrInvalidHandle = errors.New("moonshine: invalid handle")
+var ErrInvalidArgument = errors.New("moonshine: invalid argument")
+var ErrClosed = errors.New("moonshine: resource is closed")
 ```
 
 Native symbols: `moonshine_error_to_string`.
 
 Tests:
 
-- Known codes map to unknown, invalid-handle, and invalid-argument errors.
-- Unknown negative codes remain available through `ErrorCode`.
+- Known codes map to unknown, invalid-handle, and invalid-argument sentinels.
+- Unknown negative codes retain their numeric value in diagnostic text.
 - Native error strings are copied into Go memory.
 - Nil native error strings have a deterministic fallback message.
-- `errors.Is` works for stable categories.
+- `errors.Is` works through operation and native-message wrapping.
 
 ### 3. Options
 
@@ -171,10 +170,10 @@ Tests:
 - Unit: memory file names, buffers, sizes, and lifetimes are passed correctly.
 - Native: load Tiny English from files and close it.
 - Native: load Tiny English from a memory-file map and close it.
-- Native: invalid/missing model paths return a typed error.
+- Native: invalid/missing model paths map to the correct sentinel.
 
 Status: basic files-based construction and idempotent close exist. Options,
-typed errors, memory construction, and native parity tests remain.
+error sentinels, memory construction, and native parity tests remain.
 
 ### 5. Version
 
@@ -593,7 +592,7 @@ goroutines.
 | C API | Public Go destination |
 |---|---|
 | `moonshine_get_version` | `Version` |
-| `moonshine_error_to_string` | typed error conversion |
+| `moonshine_error_to_string` | sentinel mapping with diagnostic context |
 | `moonshine_free_buffer` | internal ownership helper only |
 | `moonshine_transcript_to_string` | `Transcript.String` diagnostic path |
 | `moonshine_load_transcriber_from_files` | `NewTranscriber` |
@@ -640,7 +639,7 @@ to follow the list.
 
 1. `test(go): verify generated raw ABI`
 2. `build(go): check deterministic binding generation`
-3. `feat(go): add typed native errors`
+3. `feat(go): add native error sentinels`
 4. `feat(go): add native option conversion`
 5. `feat(go): complete transcriber constructors`
 6. `test(go): add native transcriber lifecycle coverage`
