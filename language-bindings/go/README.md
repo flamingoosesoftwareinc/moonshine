@@ -26,5 +26,13 @@ cmake --build ../../core/build
 go test ./...
 ```
 
+The normal build runs model-free tests. Run model-backed parity tests
+explicitly; this fetches the Tiny English fixture into the gitignored
+`test-assets` tree:
+
+```sh
+../../scripts/build-go.sh integration
+```
+
 `c-for-go.yml` is the source of truth for symbol selection, naming, and pointer
 hints required by the C API.

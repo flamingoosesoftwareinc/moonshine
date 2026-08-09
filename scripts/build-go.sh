@@ -6,9 +6,20 @@ CORE_DIR="${REPO_ROOT_DIR}/core"
 CORE_BUILD_DIR="${CORE_DIR}/build"
 GO_DIR="${REPO_ROOT_DIR}/language-bindings/go"
 
-# Native parity tests load the same Tiny English fixture used by the Swift and
-# Android bindings. The fetch is idempotent and downloads only this model.
-"${SCRIPTS_DIR}/fetch-voice-assets.sh" tiny-en
+GO_TEST_ARGS=()
+case "${1:-}" in
+	"") ;;
+	integration)
+		# Model-backed parity tests are opt-in. The fetch is idempotent and
+		# downloads only the Tiny English fixture used by Swift and Android.
+		"${SCRIPTS_DIR}/fetch-voice-assets.sh" tiny-en
+		GO_TEST_ARGS+=("-tags=integration")
+		;;
+	*)
+		echo "usage: $0 [integration]" >&2
+		exit 2
+		;;
+esac
 
 # Generate the host-native shared library consumed by cgo. Building only the
 # moonshine target avoids compiling the core test executables for a binding
@@ -37,4 +48,4 @@ elif [[ "${UNAME_S}" == "Linux" ]]; then
 	export LD_LIBRARY_PATH="${CORE_BUILD_DIR}:${ORT_ARCH_DIR}:${LD_LIBRARY_PATH:-}"
 fi
 
-go test ./...
+go test "${GO_TEST_ARGS[@]}" ./...

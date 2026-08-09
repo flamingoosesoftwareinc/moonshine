@@ -48,8 +48,8 @@ Every increment must include the tests appropriate to that increment:
    `two_cities.wav` where the equivalent Swift or Android test does.
 6. Integration assertions test behavior, not just a non-nil result. For
    transcription this includes expected phrases and line metadata.
-7. Tests which need large optional assets must be explicitly gated and explain
-   how to enable them. Core Tiny English parity tests run by default.
+7. Tests which load model assets are gated by the `integration` build tag and
+   run explicitly with `scripts/build-go.sh integration`.
 8. `scripts/build-go.sh` is the required verification entry point because it
    builds and locates `libmoonshine` and ONNX Runtime before running Go tests.
 
