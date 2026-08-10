@@ -22,6 +22,9 @@ type textToSpeechBindings interface {
 	) int32
 	synthesize(handle int32, text string, options []Option) (Audio, int32, error)
 	synthesizePhonemes(handle int32, phonemes string, options []Option) (Audio, int32, error)
+	extractSpeechClip(
+		handle int32, audio []float32, sampleRate int, options []Option,
+	) (SpeechClip, int32, error)
 	freeTTS(handle int32)
 	errorToString(code int32) string
 }
@@ -132,6 +135,53 @@ func (rawTextToSpeechBindings) synthesizePhonemes(
 	return Audio{Samples: samples, SampleRate: int(sampleRates[0])}, code, nil
 }
 
+func (rawTextToSpeechBindings) extractSpeechClip(
+	handle int32,
+	audio []float32,
+	sampleRate int,
+	options []Option,
+) (SpeechClip, int32, error) {
+	converted := rawOptions(options)
+	output := []raw.MoonshineSpeechClipT{{}}
+	code := raw.MoonshineExtractSpeechClip(
+		audio, uint64(len(audio)), int32(sampleRate), handle,
+		converted, uint64(len(converted)), output,
+	)
+	output[0].Deref()
+	audioPointer := unsafe.SliceData(output[0].AudioData)
+	transcriptPointer := unsafe.SliceData(output[0].Transcript)
+	if audioPointer != nil {
+		defer raw.MoonshineFreeBuffer(unsafe.Pointer(audioPointer))
+	}
+	if transcriptPointer != nil {
+		defer raw.MoonshineFreeBuffer(unsafe.Pointer(transcriptPointer))
+	}
+	if code < 0 {
+		return SpeechClip{}, code, nil
+	}
+	if output[0].AudioLength > uint64(^uint(0)>>1) {
+		return SpeechClip{}, code, fmt.Errorf(
+			"speech clip sample count %d exceeds addressable memory", output[0].AudioLength,
+		)
+	}
+	if output[0].AudioLength > 0 && audioPointer == nil {
+		return SpeechClip{}, code, fmt.Errorf(
+			"native speech clip returned %d samples with a nil buffer", output[0].AudioLength,
+		)
+	}
+	samples := append(
+		[]float32(nil),
+		unsafe.Slice(audioPointer, int(output[0].AudioLength))...,
+	)
+	return SpeechClip{
+		Audio:      Audio{Samples: samples, SampleRate: 16000},
+		Start:      output[0].StartTime,
+		Duration:   output[0].SpeechDuration,
+		Complete:   output[0].IsComplete != 0,
+		Transcript: copyCString((*byte)(unsafe.Pointer(transcriptPointer))),
+	}, code, nil
+}
+
 func (rawTextToSpeechBindings) errorToString(code int32) string {
 	return copyCString(raw.MoonshineErrorToString(code))
 }
@@ -149,6 +199,16 @@ type TextToSpeech struct {
 	mu        sync.RWMutex
 	closed    bool
 	closeOnce sync.Once
+}
+
+// SpeechClip is a Go-owned voice-cloning reference window extracted from a
+// recording. Audio is always mono 16 kHz PCM when Complete is true.
+type SpeechClip struct {
+	Audio      Audio
+	Start      float32
+	Duration   float32
+	Complete   bool
+	Transcript string
 }
 
 // NewTextToSpeechFromFiles creates a synthesizer from canonical asset keys.
@@ -345,6 +405,41 @@ func (t *TextToSpeech) SynthesizePhonemes(phonemes string, options ...Option) (A
 		return Audio{}, fmt.Errorf("moonshine: copy phoneme synthesis audio: %w", err)
 	}
 	return audio, nil
+}
+
+// ExtractSpeechClip finds the strongest short speech window in a recording.
+// An incomplete result reports progress without returning clip samples.
+func (t *TextToSpeech) ExtractSpeechClip(
+	audio []float32,
+	sampleRate int,
+	options ...Option,
+) (SpeechClip, error) {
+	if t == nil {
+		return SpeechClip{}, ErrClosed
+	}
+	if len(audio) == 0 || sampleRate <= 0 {
+		return SpeechClip{}, fmt.Errorf("invalid speech clip audio: %w", ErrInvalidArgument)
+	}
+	if err := validateOptions(options); err != nil {
+		return SpeechClip{}, err
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.closed {
+		return SpeechClip{}, ErrClosed
+	}
+	clip, code, err := t.bindings.extractSpeechClip(t.handle, audio, sampleRate, options)
+	runtime.KeepAlive(t)
+	if code < 0 {
+		return SpeechClip{}, fmt.Errorf(
+			"moonshine: extract speech clip: %w",
+			nativeError(code, t.bindings.errorToString(code)),
+		)
+	}
+	if err != nil {
+		return SpeechClip{}, fmt.Errorf("moonshine: copy speech clip: %w", err)
+	}
+	return clip, nil
 }
 
 func (t *TextToSpeech) finalize() {

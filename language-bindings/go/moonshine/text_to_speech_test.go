@@ -1,6 +1,7 @@
 package moonshine
 
 import (
+	"errors"
 	"sync"
 	"testing"
 
@@ -28,6 +29,12 @@ type fakeTextToSpeechBindings struct {
 	phonemeOptions    [][]Option
 	phonemeCode       int32
 	phonemeErr        error
+	clip              SpeechClip
+	clipCode          int32
+	clipErr           error
+	clipAudio         [][]float32
+	clipSampleRates   []int
+	clipOptions       [][]Option
 }
 
 func (f *fakeTextToSpeechBindings) synthesize(_ int32, text string, options []Option) (Audio, int32, error) {
@@ -42,6 +49,15 @@ func (f *fakeTextToSpeechBindings) synthesizePhonemes(
 	f.phonemes = append(f.phonemes, phonemes)
 	f.phonemeOptions = append(f.phonemeOptions, append([]Option(nil), options...))
 	return f.audio, f.phonemeCode, f.phonemeErr
+}
+
+func (f *fakeTextToSpeechBindings) extractSpeechClip(
+	_ int32, audio []float32, sampleRate int, options []Option,
+) (SpeechClip, int32, error) {
+	f.clipAudio = append(f.clipAudio, append([]float32(nil), audio...))
+	f.clipSampleRates = append(f.clipSampleRates, sampleRate)
+	f.clipOptions = append(f.clipOptions, append([]Option(nil), options...))
+	return f.clip, f.clipCode, f.clipErr
 }
 
 func (f *fakeTextToSpeechBindings) createTTSFromFiles(language string, filenames []string, options []Option) int32 {
@@ -323,5 +339,83 @@ func TestTextToSpeechSynthesizePhonemesAfterClose(t *testing.T) {
 
 	var nilSynthesizer *TextToSpeech
 	_, err = nilSynthesizer.SynthesizePhonemes("həˈloʊ")
+	require.ErrorIs(t, err, ErrClosed)
+}
+
+func TestTextToSpeechExtractSpeechClipForwardsAndReturnsOwnedResult(t *testing.T) {
+	want := SpeechClip{
+		Audio: Audio{Samples: []float32{0.1, 0.2}, SampleRate: 16000},
+		Start: 1.25, Duration: 2.5, Complete: true, Transcript: "hello",
+	}
+	bindings := &fakeTextToSpeechBindings{handle: 42, clip: want}
+	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
+	options := []Option{{Name: "minimum_speech_seconds", Value: "1"}}
+
+	got, err := synthesizer.ExtractSpeechClip([]float32{0.25, -0.5}, 24000, options...)
+
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	assert.Equal(t, [][]float32{{0.25, -0.5}}, bindings.clipAudio)
+	assert.Equal(t, []int{24000}, bindings.clipSampleRates)
+	assert.Equal(t, [][]Option{options}, bindings.clipOptions)
+}
+
+func TestTextToSpeechExtractSpeechClipReturnsIncompleteProgress(t *testing.T) {
+	want := SpeechClip{Start: 0.5, Duration: 0.75}
+	bindings := &fakeTextToSpeechBindings{handle: 42, clip: want}
+	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
+
+	got, err := synthesizer.ExtractSpeechClip([]float32{0}, 16000)
+
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	assert.False(t, got.Complete)
+	assert.Empty(t, got.Audio.Samples)
+}
+
+func TestTextToSpeechExtractSpeechClipMapsErrors(t *testing.T) {
+	t.Run("native sentinel", func(t *testing.T) {
+		bindings := &fakeTextToSpeechBindings{
+			handle: 42, clipCode: rawErrorInvalidHandle, errorMessage: "Invalid handle",
+		}
+		synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
+		_, err = synthesizer.ExtractSpeechClip([]float32{0}, 16000)
+		require.ErrorIs(t, err, ErrInvalidHandle)
+	})
+	t.Run("copy failure", func(t *testing.T) {
+		copyErr := errors.New("copy failed")
+		bindings := &fakeTextToSpeechBindings{handle: 42, clipErr: copyErr}
+		synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
+		_, err = synthesizer.ExtractSpeechClip([]float32{0}, 16000)
+		require.ErrorIs(t, err, copyErr)
+	})
+}
+
+func TestTextToSpeechExtractSpeechClipRejectsInvalidStateAndInput(t *testing.T) {
+	bindings := &fakeTextToSpeechBindings{handle: 42}
+	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+
+	_, err = synthesizer.ExtractSpeechClip(nil, 16000)
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	_, err = synthesizer.ExtractSpeechClip([]float32{0}, 0)
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	_, err = synthesizer.ExtractSpeechClip([]float32{0}, 16000, Option{})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Empty(t, bindings.clipAudio)
+
+	require.NoError(t, synthesizer.Close())
+	_, err = synthesizer.ExtractSpeechClip([]float32{0}, 16000)
+	require.ErrorIs(t, err, ErrClosed)
+	var nilSynthesizer *TextToSpeech
+	_, err = nilSynthesizer.ExtractSpeechClip([]float32{0}, 16000)
 	require.ErrorIs(t, err, ErrClosed)
 }
