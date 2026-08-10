@@ -15,8 +15,14 @@ case "${1:-}" in
 		"${SCRIPTS_DIR}/fetch-voice-assets.sh" tiny-en
 		GO_TEST_ARGS+=("-tags=integration")
 		;;
+	roundtrip)
+		# Explicit model-backed synthesis -> WAV -> transcription confidence
+		# example. Keep its larger TTS assets out of every test suite.
+		"${SCRIPTS_DIR}/fetch-voice-assets.sh" tiny-en
+		"${SCRIPTS_DIR}/fetch-voice-assets.sh" tts-smoke
+		;;
 	*)
-		echo "usage: $0 [integration]" >&2
+		echo "usage: $0 [integration|roundtrip]" >&2
 		exit 2
 		;;
 esac
@@ -49,3 +55,10 @@ elif [[ "${UNAME_S}" == "Linux" ]]; then
 fi
 
 go test "${GO_TEST_ARGS[@]}" ./...
+
+if [[ "${1:-}" == "roundtrip" ]]; then
+	go run ./examples/voice-roundtrip \
+		-stt-model "${REPO_ROOT_DIR}/test-assets/tiny-en" \
+		-tts-root "${CORE_DIR}/moonshine-tts/data" \
+		-output "${TMPDIR:-/tmp}/moonshine-voice-roundtrip.wav"
+fi

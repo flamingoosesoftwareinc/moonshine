@@ -14,6 +14,7 @@
 #   scripts/fetch-voice-assets.sh              # test-assets + tts
 #   scripts/fetch-voice-assets.sh tiny-en
 #   scripts/fetch-voice-assets.sh test-assets
+#   scripts/fetch-voice-assets.sh tts-smoke
 #   scripts/fetch-voice-assets.sh tts
 #   scripts/fetch-voice-assets.sh android-test
 #   scripts/fetch-voice-assets.sh all
@@ -118,6 +119,28 @@ fetch_test_assets() {
 
   fetch_cdn "model/spelling-en/spelling_cnn.ort" \
     "${ta}/spelling_cnn.ort"
+}
+
+# Smallest self-contained English TTS bundle used by the Go voice round-trip
+# example: English G2P plus one low-quality Piper voice (~42 MB total).
+fetch_tts_smoke() {
+  echo "=== English Piper smoke-test assets (CDN) ==="
+  local data="${ROOT}/core/moonshine-tts/data"
+
+  fetch_cdn "tts/en_us/dict_filtered_heteronyms.tsv" \
+    "${data}/en_us/dict_filtered_heteronyms.tsv"
+  fetch_cdn "tts/en_us/g2p-config.json" \
+    "${data}/en_us/g2p-config.json"
+  fetch_cdn "tts/en_us/oov/model.ort" \
+    "${data}/en_us/oov/model.ort"
+  fetch_cdn "tts/en_us/oov/onnx-config.json" \
+    "${data}/en_us/oov/onnx-config.json"
+  fetch_cdn "tts/en_us/piper-voices/en_US-amy-low.model.ort" \
+    "${data}/en_us/piper-voices/en_US-amy-low.model.ort"
+  fetch_cdn "tts/en_us/piper-voices/en_US-amy-low.weights.ort" \
+    "${data}/en_us/piper-voices/en_US-amy-low.weights.ort"
+  fetch_cdn "tts/en_us/piper-voices/en_US-amy-low.onnx.json" \
+    "${data}/en_us/piper-voices/en_US-amy-low.onnx.json"
 }
 
 # androidTest historically bundled its own tiny-en; language-bindings/android/build.gradle.kts now uses
@@ -257,6 +280,7 @@ case "${TARGET}" in
   -h|--help) usage 0 ;;
   tiny-en) need_cmd curl; fetch_tiny_en ;;
   test-assets) need_cmd curl; fetch_test_assets ;;
+  tts-smoke) need_cmd curl; fetch_tts_smoke ;;
   tts) fetch_tts ;;
   android-test) need_cmd curl; fetch_android_test ;;
   all)
