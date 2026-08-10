@@ -26,8 +26,14 @@ case "${1:-}" in
 		# embedding manifest through the public downloader API.
 		GO_TEST_ARGS+=("-tags=integration,embedding_integration")
 		;;
+	g2p-integration)
+		# Explicit native G2P parity test for file-backed and memory-backed
+		# phonemizers. Fetch only the English fixture it exercises.
+		"${SCRIPTS_DIR}/fetch-voice-assets.sh" tts-smoke
+		GO_TEST_ARGS+=("-tags=g2p_integration")
+		;;
 	*)
-		echo "usage: $0 [integration|roundtrip|embedding-integration]" >&2
+		echo "usage: $0 [integration|roundtrip|embedding-integration|g2p-integration]" >&2
 		exit 2
 		;;
 esac
