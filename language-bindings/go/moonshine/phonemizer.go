@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/moonshine-ai/moonshine/language-bindings/go/raw"
 )
@@ -20,6 +21,8 @@ type phonemizerBindings interface {
 		options []Option,
 	) int32
 	freePhonemizer(handle int32)
+	textToPhonemes(handle int32, text string, options []Option) (unsafe.Pointer, uint64, int32)
+	freeBuffer(pointer unsafe.Pointer)
 	errorToString(code int32) string
 }
 
@@ -53,6 +56,27 @@ func (rawPhonemizerBindings) createPhonemizerFromMemory(
 
 func (rawPhonemizerBindings) freePhonemizer(handle int32) {
 	raw.MoonshineFreeGraphemeToPhonemizer(handle)
+}
+
+func (rawPhonemizerBindings) textToPhonemes(
+	handle int32,
+	text string,
+	options []Option,
+) (unsafe.Pointer, uint64, int32) {
+	converted := rawOptions(options)
+	output := []string{""}
+	count := []uint64{0}
+	code := raw.MoonshineTextToPhonemes(
+		handle, text, converted, uint64(len(converted)), output, count,
+	)
+	if output[0] == "" {
+		return nil, count[0], code
+	}
+	return unsafe.Pointer(unsafe.StringData(output[0])), count[0], code
+}
+
+func (rawPhonemizerBindings) freeBuffer(pointer unsafe.Pointer) {
+	raw.MoonshineFreeBuffer(pointer)
 }
 
 func (rawPhonemizerBindings) errorToString(code int32) string {
@@ -187,6 +211,46 @@ func (p *Phonemizer) Language() string {
 		return ""
 	}
 	return p.language
+}
+
+// Phonemes converts text to a Go-owned International Phonetic Alphabet (IPA)
+// string. The result remains valid after later calls and after Close.
+func (p *Phonemizer) Phonemes(text string, options ...Option) (string, error) {
+	if p == nil {
+		return "", ErrClosed
+	}
+	if strings.IndexByte(text, 0) >= 0 {
+		return "", fmt.Errorf("phonemizer text contains a NUL: %w", ErrInvalidArgument)
+	}
+	if err := validateOptions(options); err != nil {
+		return "", err
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return "", ErrClosed
+	}
+	pointer, count, code := p.bindings.textToPhonemes(p.handle, text, options)
+	if pointer != nil {
+		defer p.bindings.freeBuffer(pointer)
+	}
+	runtime.KeepAlive(p)
+	if code < 0 {
+		return "", fmt.Errorf(
+			"moonshine: convert text to phonemes: %w",
+			nativeError(code, p.bindings.errorToString(code)),
+		)
+	}
+	if count > uint64(^uint(0)>>1) {
+		return "", fmt.Errorf("phoneme length %d exceeds addressable memory: %w", count, ErrInvalidNativeOutput)
+	}
+	if count > 0 && pointer == nil {
+		return "", fmt.Errorf("native phonemizer returned %d bytes with a nil buffer: %w", count, ErrInvalidNativeOutput)
+	}
+	if count == 0 {
+		return "", nil
+	}
+	return strings.Clone(unsafe.String((*byte)(pointer), int(count))), nil
 }
 
 // Close releases the native phonemizer and any pinned model buffers.

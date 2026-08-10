@@ -2,6 +2,7 @@ package moonshine
 
 import (
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,6 +17,17 @@ type fakePhonemizerBindings struct {
 	sizes        [][]uint64
 	options      [][]Option
 	freed        []int32
+	phonemes     []byte
+	phonemeCount uint64
+	phonemeCode  int32
+	phonemeCalls []phonemeCall
+	freedBuffers []unsafe.Pointer
+}
+
+type phonemeCall struct {
+	handle  int32
+	text    string
+	options []Option
 }
 
 func (f *fakePhonemizerBindings) createPhonemizerFromFiles(
@@ -43,7 +55,21 @@ func (f *fakePhonemizerBindings) createPhonemizerFromMemory(
 }
 
 func (f *fakePhonemizerBindings) freePhonemizer(handle int32) { f.freed = append(f.freed, handle) }
-func (f *fakePhonemizerBindings) errorToString(int32) string  { return f.errorMessage }
+func (f *fakePhonemizerBindings) textToPhonemes(
+	handle int32, text string, options []Option,
+) (unsafe.Pointer, uint64, int32) {
+	f.phonemeCalls = append(f.phonemeCalls, phonemeCall{
+		handle: handle, text: text, options: append([]Option(nil), options...),
+	})
+	if len(f.phonemes) == 0 {
+		return nil, f.phonemeCount, f.phonemeCode
+	}
+	return unsafe.Pointer(&f.phonemes[0]), f.phonemeCount, f.phonemeCode
+}
+func (f *fakePhonemizerBindings) freeBuffer(pointer unsafe.Pointer) {
+	f.freedBuffers = append(f.freedBuffers, pointer)
+}
+func (f *fakePhonemizerBindings) errorToString(int32) string { return f.errorMessage }
 
 func TestNewPhonemizerFromFilesCreatesAndClosesHandle(t *testing.T) {
 	bindings := &fakePhonemizerBindings{handle: 42}
@@ -145,4 +171,78 @@ func TestNilPhonemizerCloseAndLanguage(t *testing.T) {
 	var phonemizer *Phonemizer
 	require.NoError(t, phonemizer.Close())
 	assert.Empty(t, phonemizer.Language())
+}
+
+func TestPhonemizerPhonemesCopiesAndReleasesNativeResult(t *testing.T) {
+	bindings := &fakePhonemizerBindings{
+		handle: 42, phonemes: []byte("həˈloʊ"), phonemeCount: uint64(len("həˈloʊ")),
+	}
+	phonemizer, err := newPhonemizerFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, phonemizer.Close()) })
+	options := []Option{{Name: "mode", Value: "test"}}
+
+	got, err := phonemizer.Phonemes("hello", options...)
+
+	require.NoError(t, err)
+	assert.Equal(t, "həˈloʊ", got)
+	assert.Equal(t, []phonemeCall{{handle: 42, text: "hello", options: options}}, bindings.phonemeCalls)
+	assert.Len(t, bindings.freedBuffers, 1)
+	bindings.phonemes[0] = 'x'
+	assert.Equal(t, "həˈloʊ", got)
+}
+
+func TestPhonemizerPhonemesMapsNativeErrorAndReleasesResult(t *testing.T) {
+	bindings := &fakePhonemizerBindings{
+		handle: 42, phonemes: []byte("partial"), phonemeCount: 7,
+		phonemeCode: rawErrorInvalidArgument, errorMessage: "Invalid argument",
+	}
+	phonemizer, err := newPhonemizerFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, phonemizer.Close()) })
+
+	got, err := phonemizer.Phonemes("hello")
+
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Empty(t, got)
+	assert.Len(t, bindings.freedBuffers, 1)
+}
+
+func TestPhonemizerPhonemesRejectsInvalidNativeOutput(t *testing.T) {
+	bindings := &fakePhonemizerBindings{handle: 42, phonemeCount: 1}
+	phonemizer, err := newPhonemizerFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, phonemizer.Close()) })
+
+	got, err := phonemizer.Phonemes("hello")
+
+	require.ErrorIs(t, err, ErrInvalidNativeOutput)
+	assert.Empty(t, got)
+}
+
+func TestPhonemizerPhonemesRejectsInvalidInput(t *testing.T) {
+	bindings := &fakePhonemizerBindings{handle: 42}
+	phonemizer, err := newPhonemizerFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, phonemizer.Close()) })
+
+	_, err = phonemizer.Phonemes("bad\x00text")
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	_, err = phonemizer.Phonemes("hello", Option{Name: ""})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Empty(t, bindings.phonemeCalls)
+}
+
+func TestPhonemizerPhonemesAfterClose(t *testing.T) {
+	bindings := &fakePhonemizerBindings{handle: 42}
+	phonemizer, err := newPhonemizerFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	require.NoError(t, phonemizer.Close())
+
+	_, err = phonemizer.Phonemes("hello")
+	require.ErrorIs(t, err, ErrClosed)
+
+	var nilPhonemizer *Phonemizer
+	_, err = nilPhonemizer.Phonemes("hello")
+	require.ErrorIs(t, err, ErrClosed)
 }
