@@ -201,6 +201,50 @@ func TestNativeStreamManualSnapshotsAndEmptyAudio(t *testing.T) {
 	assert.Empty(t, second.Lines)
 }
 
+func TestNativeSTTDependencies(t *testing.T) {
+	manifest, err := STTDependencies(
+		"en",
+		Option{Name: "model_arch", Value: "0"},
+		Option{Name: "word_timestamps", Value: "true"},
+	)
+
+	require.NoError(t, err)
+	require.NotEmpty(t, manifest.Groups)
+	var names []string
+	for _, group := range manifest.Groups {
+		assert.NotEmpty(t, group.BaseURL)
+		for _, file := range group.Files {
+			assert.NotEmpty(t, file.Name)
+			assert.NotEmpty(t, file.URL)
+			names = append(names, file.Name)
+		}
+	}
+	assert.Contains(t, names, "encoder_model.ort")
+	assert.Contains(t, names, "decoder_model_merged.ort")
+	assert.Contains(t, names, "decoder_with_attention.ort")
+	assert.Contains(t, names, "tokenizer.bin")
+}
+
+func TestNativeSTTDependenciesRejectUnknownLanguage(t *testing.T) {
+	_, err := STTDependencies("not-a-moonshine-language")
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
+func TestNativeDiarizationDependencies(t *testing.T) {
+	manifest, err := DiarizationDependencies()
+
+	require.NoError(t, err)
+	require.Len(t, manifest.Groups, 1)
+	require.Len(t, manifest.Groups[0].Files, 2)
+	assert.Equal(t, "segmentation.ort", manifest.Groups[0].Files[0].Name)
+	assert.Equal(t, "embedding.ort", manifest.Groups[0].Files[1].Name)
+	for _, file := range manifest.Groups[0].Files {
+		assert.NotEmpty(t, file.URL)
+		require.NotNil(t, file.Size)
+		assert.Positive(t, *file.Size)
+	}
+}
+
 func transcriptText(transcript Transcript) string {
 	var text strings.Builder
 	for _, line := range transcript.Lines {

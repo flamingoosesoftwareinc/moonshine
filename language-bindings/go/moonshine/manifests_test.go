@@ -1,0 +1,136 @@
+package moonshine
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+type fakeManifestBindings struct {
+	sttCode      int32
+	diarCode     int32
+	errorMessage string
+	output       []byte
+	languages    []string
+	options      [][]Option
+	freed        []*byte
+}
+
+func (f *fakeManifestBindings) setOutput(output **byte) {
+	if len(f.output) > 0 {
+		*output = &f.output[0]
+	}
+}
+
+func (f *fakeManifestBindings) sttDependencies(language string, options []Option, output **byte) int32 {
+	f.languages = append(f.languages, language)
+	f.options = append(f.options, append([]Option(nil), options...))
+	f.setOutput(output)
+	return f.sttCode
+}
+
+func (f *fakeManifestBindings) diarizationDependencies(output **byte) int32 {
+	f.setOutput(output)
+	return f.diarCode
+}
+
+func (f *fakeManifestBindings) freeBuffer(pointer *byte) {
+	f.freed = append(f.freed, pointer)
+}
+
+func (f *fakeManifestBindings) errorToString(int32) string { return f.errorMessage }
+
+func manifestJSON(value string) []byte { return append([]byte(value), 0) }
+
+func TestSTTDependenciesDecodesAndFreesNativeManifest(t *testing.T) {
+	bindings := &fakeManifestBindings{output: manifestJSON(`{
+		"groups":[{"base_url":"https://example.test/model","files":[
+			{"name":"model.ort","url":"https://example.test/model/model.ort","size":42,"checksum":"abc","checksum_type":"crc32c"},
+			{"name":"tokenizer.bin","url":"https://example.test/model/tokenizer.bin","size":null,"checksum":"","checksum_type":""}
+		]}]}`)}
+	options := []Option{{Name: "model_arch", Value: "0"}}
+
+	manifest, err := sttDependencies(bindings, "en", options...)
+
+	require.NoError(t, err)
+	require.Len(t, manifest.Groups, 1)
+	assert.Equal(t, "https://example.test/model", manifest.Groups[0].BaseURL)
+	require.Len(t, manifest.Groups[0].Files, 2)
+	assert.Equal(t, "model.ort", manifest.Groups[0].Files[0].Name)
+	require.NotNil(t, manifest.Groups[0].Files[0].Size)
+	assert.Equal(t, uint64(42), *manifest.Groups[0].Files[0].Size)
+	assert.Nil(t, manifest.Groups[0].Files[1].Size)
+	assert.Equal(t, []string{"en"}, bindings.languages)
+	assert.Equal(t, [][]Option{options}, bindings.options)
+	assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+}
+
+func TestDiarizationDependenciesDecodesAndFreesNativeManifest(t *testing.T) {
+	bindings := &fakeManifestBindings{output: manifestJSON(`{"groups":[]}`)}
+
+	manifest, err := diarizationDependencies(bindings)
+
+	require.NoError(t, err)
+	assert.Empty(t, manifest.Groups)
+	assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+}
+
+func TestManifestNativeErrorUsesSentinelAndFreesUnexpectedOutput(t *testing.T) {
+	bindings := &fakeManifestBindings{
+		sttCode:      rawErrorInvalidArgument,
+		errorMessage: "Invalid argument",
+		output:       manifestJSON(`{"groups":[]}`),
+	}
+
+	_, err := sttDependencies(bindings, "unknown")
+
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+}
+
+func TestManifestRejectsNilAndMalformedNativeOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		output []byte
+	}{
+		{name: "nil"},
+		{name: "malformed", output: manifestJSON(`{`)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bindings := &fakeManifestBindings{output: test.output}
+
+			_, err := diarizationDependencies(bindings)
+
+			require.ErrorIs(t, err, ErrInvalidNativeOutput)
+			if len(test.output) == 0 {
+				assert.Empty(t, bindings.freed)
+			} else {
+				assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+			}
+		})
+	}
+}
+
+func TestSTTDependenciesRejectsInvalidInputBeforeNativeCall(t *testing.T) {
+	tests := []struct {
+		name     string
+		language string
+		options  []Option
+	}{
+		{name: "empty language"},
+		{name: "NUL language", language: "e\x00n"},
+		{name: "invalid option", language: "en", options: []Option{{Name: ""}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bindings := &fakeManifestBindings{}
+
+			_, err := sttDependencies(bindings, test.language, test.options...)
+
+			require.ErrorIs(t, err, ErrInvalidArgument)
+			assert.Empty(t, bindings.languages)
+		})
+	}
+}

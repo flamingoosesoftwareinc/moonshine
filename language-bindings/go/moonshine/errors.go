@@ -15,6 +15,9 @@ var (
 	// ErrClosed indicates that an operation requires a native resource which
 	// has already been closed.
 	ErrClosed = errors.New("moonshine: resource is closed")
+	// ErrInvalidNativeOutput indicates that a successful native call returned
+	// missing or malformed data.
+	ErrInvalidNativeOutput = errors.New("moonshine: invalid native output")
 )
 
 func nativeError(code int32, message string) error {
