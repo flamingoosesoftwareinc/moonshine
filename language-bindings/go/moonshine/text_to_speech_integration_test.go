@@ -58,6 +58,22 @@ func TestNativeTextPhonemeAndMemorySynthesisPaths(t *testing.T) {
 	assert.True(t, clip.Complete)
 	assert.Equal(t, 16000, clip.Audio.SampleRate)
 	assert.NotEmpty(t, clip.Audio.Samples)
+	clone, err := synthesizer.StartVoiceClone(
+		Option{Name: "clip_duration_seconds", Value: "1"},
+		Option{Name: "minimum_speech_seconds", Value: "0"},
+	)
+	require.NoError(t, err)
+	readyCount := 0
+	clone.OnReady(func() { readyCount++ })
+	chunkSize := fromText.SampleRate / 4
+	for start := 0; start < len(fromText.Samples) && !clone.IsReady(); start += chunkSize {
+		end := min(start+chunkSize, len(fromText.Samples))
+		require.NoError(t, clone.AddAudio(fromText.Samples[start:end], fromText.SampleRate))
+	}
+	assert.True(t, clone.IsReady())
+	assert.Equal(t, VoiceCloneSampleRate, clone.Audio().SampleRate)
+	assert.NotEmpty(t, clone.Audio().Samples)
+	assert.Equal(t, 1, readyCount)
 
 	memoryFiles := readG2PFiles(t, root)
 	memorySynthesizer, err := NewTextToSpeechFromMemory("en_us", memoryFiles, createOptions...)
