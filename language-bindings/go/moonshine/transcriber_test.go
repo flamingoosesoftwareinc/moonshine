@@ -12,27 +12,50 @@ import (
 )
 
 type fakeTranscriberBindings struct {
-	handle          int32
-	errorMessage    string
-	paths           []string
-	arches          []uint32
-	options         [][]Option
-	filenames       [][]string
-	memory          [][][]byte
-	memorySizes     [][]uint64
-	transcript      Transcript
-	transcribeCode  int32
-	transcribeErr   error
-	transcribeAudio [][]float32
-	transcribeRates []int32
-	transcribeFlags []uint32
-	freed           []int32
-	freedHandle     chan int32
-	streamHandle    int32
-	streamCode      int32
-	streamCalls     []string
-	streamFlags     []uint32
-	freedStreams    [][2]int32
+	handle                int32
+	errorMessage          string
+	paths                 []string
+	arches                []uint32
+	options               [][]Option
+	filenames             [][]string
+	memory                [][][]byte
+	memorySizes           [][]uint64
+	transcript            Transcript
+	transcribeCode        int32
+	transcribeErr         error
+	transcribeAudio       [][]float32
+	transcribeRates       []int32
+	transcribeFlags       []uint32
+	freed                 []int32
+	freedHandle           chan int32
+	streamHandle          int32
+	streamCode            int32
+	streamCalls           []string
+	streamFlags           []uint32
+	freedStreams          [][2]int32
+	streamAudio           [][]float32
+	streamRates           []int32
+	streamAudioFlags      []uint32
+	streamTranscript      Transcript
+	streamTranscriptFlags []uint32
+	streamTranscriptErr   error
+}
+
+func (f *fakeTranscriberBindings) addAudioToStream(
+	_, _ int32,
+	audio []float32,
+	sampleRate int32,
+	flags uint32,
+) int32 {
+	f.streamAudio = append(f.streamAudio, append([]float32(nil), audio...))
+	f.streamRates = append(f.streamRates, sampleRate)
+	f.streamAudioFlags = append(f.streamAudioFlags, flags)
+	return f.streamCode
+}
+
+func (f *fakeTranscriberBindings) transcribeStream(_, _ int32, flags uint32) (Transcript, int32, error) {
+	f.streamTranscriptFlags = append(f.streamTranscriptFlags, flags)
+	return f.streamTranscript, f.streamCode, f.streamTranscriptErr
 }
 
 func (f *fakeTranscriberBindings) createStream(_ int32, flags uint32) int32 {

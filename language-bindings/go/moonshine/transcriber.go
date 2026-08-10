@@ -31,6 +31,13 @@ type transcriberBindings interface {
 	startStream(transcriberHandle, streamHandle int32) int32
 	stopStream(transcriberHandle, streamHandle int32) int32
 	freeStream(transcriberHandle, streamHandle int32) int32
+	addAudioToStream(
+		transcriberHandle, streamHandle int32,
+		audio []float32,
+		sampleRate int32,
+		flags uint32,
+	) int32
+	transcribeStream(transcriberHandle, streamHandle int32, flags uint32) (Transcript, int32, error)
 	errorToString(code int32) string
 }
 
@@ -112,6 +119,40 @@ func (rawTranscriberBindings) stopStream(transcriberHandle, streamHandle int32) 
 
 func (rawTranscriberBindings) freeStream(transcriberHandle, streamHandle int32) int32 {
 	return raw.MoonshineFreeStream(transcriberHandle, streamHandle)
+}
+
+func (rawTranscriberBindings) addAudioToStream(
+	transcriberHandle, streamHandle int32,
+	audio []float32,
+	sampleRate int32,
+	flags uint32,
+) int32 {
+	return raw.MoonshineTranscribeAddAudioToStream(
+		transcriberHandle,
+		streamHandle,
+		audio,
+		uint64(len(audio)),
+		sampleRate,
+		flags,
+	)
+}
+
+func (rawTranscriberBindings) transcribeStream(
+	transcriberHandle, streamHandle int32,
+	flags uint32,
+) (Transcript, int32, error) {
+	output := [][]raw.TranscriptT{make([]raw.TranscriptT, 1)}
+	code := raw.MoonshineTranscribeStream(transcriberHandle, streamHandle, flags, output)
+	if code < 0 {
+		return Transcript{}, code, nil
+	}
+
+	materialized, err := materializeRawTranscript(output[0][0])
+	if err != nil {
+		return Transcript{}, code, err
+	}
+	transcript, err := copyRawTranscript(materialized)
+	return transcript, code, err
 }
 
 func (rawTranscriberBindings) errorToString(code int32) string {

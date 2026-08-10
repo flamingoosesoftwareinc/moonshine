@@ -91,3 +91,81 @@ func TestNilStreamLifecycle(t *testing.T) {
 	require.ErrorIs(t, stream.Stop(), ErrClosed)
 	require.NoError(t, stream.Close())
 }
+
+func TestStreamAddAudioForwardsSamplesRateAndFlags(t *testing.T) {
+	bindings := &fakeTranscriberBindings{handle: 42, streamHandle: 7}
+	transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+	stream, err := transcriber.NewStream()
+	require.NoError(t, err)
+
+	err = stream.AddAudio([]float32{0.25, -0.5}, 16000, FlagSpellingMode)
+
+	require.NoError(t, err)
+	assert.Equal(t, [][]float32{{0.25, -0.5}}, bindings.streamAudio)
+	assert.Equal(t, []int32{16000}, bindings.streamRates)
+	assert.Equal(t, []uint32{uint32(FlagSpellingMode)}, bindings.streamAudioFlags)
+}
+
+func TestStreamTranscriptReturnsSnapshotAndForwardsFlags(t *testing.T) {
+	want := Transcript{Lines: []TranscriptLine{{Text: "hello"}}}
+	bindings := &fakeTranscriberBindings{handle: 42, streamHandle: 7, streamTranscript: want}
+	transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+	stream, err := transcriber.NewStream()
+	require.NoError(t, err)
+
+	got, err := stream.Transcript(FlagForceUpdate, FlagSpellingMode)
+
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	assert.Equal(t, []uint32{uint32(FlagForceUpdate | FlagSpellingMode)}, bindings.streamTranscriptFlags)
+}
+
+func TestStreamAudioAndTranscriptMapNativeErrors(t *testing.T) {
+	bindings := &fakeTranscriberBindings{handle: 42, streamHandle: 7}
+	transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+	require.NoError(t, err)
+	stream, err := transcriber.NewStream()
+	require.NoError(t, err)
+	bindings.streamCode = rawErrorInvalidHandle
+
+	require.ErrorIs(t, stream.AddAudio(nil, 16000), ErrInvalidHandle)
+	_, err = stream.Transcript()
+	require.ErrorIs(t, err, ErrInvalidHandle)
+
+	bindings.streamCode = 0
+	require.NoError(t, stream.Close())
+	require.NoError(t, transcriber.Close())
+}
+
+func TestStreamAddAudioRejectsInvalidSampleRate(t *testing.T) {
+	bindings := &fakeTranscriberBindings{handle: 42, streamHandle: 7}
+	transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+	stream, err := transcriber.NewStream()
+	require.NoError(t, err)
+
+	for _, sampleRate := range []int{0, -1} {
+		err = stream.AddAudio(nil, sampleRate)
+		require.ErrorIs(t, err, ErrInvalidArgument)
+	}
+	assert.Empty(t, bindings.streamAudio)
+}
+
+func TestClosedStreamRejectsAudioAndTranscript(t *testing.T) {
+	bindings := &fakeTranscriberBindings{handle: 42, streamHandle: 7}
+	transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+	stream, err := transcriber.NewStream()
+	require.NoError(t, err)
+	require.NoError(t, stream.Close())
+
+	require.ErrorIs(t, stream.AddAudio(nil, 16000), ErrClosed)
+	_, err = stream.Transcript()
+	require.ErrorIs(t, err, ErrClosed)
+}

@@ -86,6 +86,76 @@ func (s *Stream) changeState(operation string, active bool) error {
 	return nil
 }
 
+// AddAudio appends mono float-PCM samples to the stream without running
+// inference.
+func (s *Stream) AddAudio(audio []float32, sampleRate int, flags ...TranscribeFlags) error {
+	if s == nil || s.transcriber == nil {
+		return ErrClosed
+	}
+	if sampleRate <= 0 || uint64(sampleRate) > uint64(^uint32(0)>>1) {
+		return fmt.Errorf("invalid sample rate %d: %w", sampleRate, ErrInvalidArgument)
+	}
+
+	t := s.transcriber
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t.closed || s.closed {
+		return ErrClosed
+	}
+
+	code := t.bindings.addAudioToStream(
+		t.handle,
+		s.handle,
+		audio,
+		int32(sampleRate),
+		combineTranscribeFlags(flags),
+	)
+	runtime.KeepAlive(s)
+	if code < 0 {
+		return fmt.Errorf(
+			"moonshine: add stream audio: %w",
+			nativeError(code, t.bindings.errorToString(code)),
+		)
+	}
+	return nil
+}
+
+// Transcript runs an incremental transcription pass and returns a Go-owned
+// snapshot that remains valid after later stream calls and cleanup.
+func (s *Stream) Transcript(flags ...TranscribeFlags) (Transcript, error) {
+	if s == nil || s.transcriber == nil {
+		return Transcript{}, ErrClosed
+	}
+
+	t := s.transcriber
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t.closed || s.closed {
+		return Transcript{}, ErrClosed
+	}
+
+	transcript, code, err := t.bindings.transcribeStream(
+		t.handle,
+		s.handle,
+		combineTranscribeFlags(flags),
+	)
+	runtime.KeepAlive(s)
+	if code < 0 {
+		return Transcript{}, fmt.Errorf(
+			"moonshine: transcribe stream: %w",
+			nativeError(code, t.bindings.errorToString(code)),
+		)
+	}
+	if err != nil {
+		return Transcript{}, fmt.Errorf("moonshine: copy stream transcript: %w", err)
+	}
+	return transcript, nil
+}
+
 // Close releases the native stream. It is safe to call Close more than once.
 func (s *Stream) Close() error {
 	if s == nil || s.transcriber == nil {
