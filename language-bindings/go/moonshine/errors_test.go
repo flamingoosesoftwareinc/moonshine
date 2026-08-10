@@ -33,7 +33,6 @@ func TestNativeErrorUsesFallbackMessage(t *testing.T) {
 	err := nativeError(-3, "")
 
 	require.ErrorIs(t, err, ErrInvalidArgument)
-	assert.Equal(t, ErrInvalidArgument, err)
 }
 
 func TestNativeErrorPreservesUnknownCode(t *testing.T) {

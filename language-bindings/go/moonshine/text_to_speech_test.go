@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,33 +37,66 @@ type fakeTextToSpeechBindings struct {
 	clipAudio         [][]float32
 	clipSampleRates   []int
 	clipOptions       [][]Option
+	freedBuffers      []unsafe.Pointer
+	nativeAudio       *nativeAudio
+	nativeClip        *nativeSpeechClip
+	clipTranscripts   [][]byte
 }
 
-func (f *fakeTextToSpeechBindings) synthesize(_ int32, text string, options []Option) (Audio, int32, error) {
+func (f *fakeTextToSpeechBindings) synthesize(_ int32, text string, options []Option) (nativeAudio, int32, error) {
 	f.texts = append(f.texts, text)
 	f.synthesizeOptions = append(f.synthesizeOptions, append([]Option(nil), options...))
-	return f.audio, f.synthesizeCode, f.synthesizeErr
+	if f.nativeAudio != nil {
+		return *f.nativeAudio, f.synthesizeCode, f.synthesizeErr
+	}
+	return nativeAudioFrom(f.audio), f.synthesizeCode, f.synthesizeErr
 }
 
 func (f *fakeTextToSpeechBindings) synthesizePhonemes(
 	_ int32, phonemes string, options []Option,
-) (Audio, int32, error) {
+) (nativeAudio, int32, error) {
 	f.phonemes = append(f.phonemes, phonemes)
 	f.phonemeOptions = append(f.phonemeOptions, append([]Option(nil), options...))
-	return f.audio, f.phonemeCode, f.phonemeErr
+	if f.nativeAudio != nil {
+		return *f.nativeAudio, f.phonemeCode, f.phonemeErr
+	}
+	return nativeAudioFrom(f.audio), f.phonemeCode, f.phonemeErr
 }
 
 func (f *fakeTextToSpeechBindings) extractSpeechClip(
 	_ int32, audio []float32, sampleRate int, options []Option,
-) (SpeechClip, int32, error) {
+) (nativeSpeechClip, int32, error) {
 	f.clipAudio = append(f.clipAudio, append([]float32(nil), audio...))
 	f.clipSampleRates = append(f.clipSampleRates, sampleRate)
 	f.clipOptions = append(f.clipOptions, append([]Option(nil), options...))
 	if len(f.clips) > 0 {
 		index := min(len(f.clipAudio)-1, len(f.clips)-1)
-		return f.clips[index], f.clipCode, f.clipErr
+		return f.nativeSpeechClip(f.clips[index]), f.clipCode, f.clipErr
 	}
-	return f.clip, f.clipCode, f.clipErr
+	if f.nativeClip != nil {
+		return *f.nativeClip, f.clipCode, f.clipErr
+	}
+	return f.nativeSpeechClip(f.clip), f.clipCode, f.clipErr
+}
+
+func nativeAudioFrom(audio Audio) nativeAudio {
+	return nativeAudio{pointer: unsafe.SliceData(audio.Samples), length: uint64(len(audio.Samples)), sampleRate: int32(audio.SampleRate)}
+}
+
+func (f *fakeTextToSpeechBindings) nativeSpeechClip(clip SpeechClip) nativeSpeechClip {
+	var transcript *byte
+	if clip.Transcript != "" {
+		f.clipTranscripts = append(f.clipTranscripts, append([]byte(clip.Transcript), 0))
+		transcript = &f.clipTranscripts[len(f.clipTranscripts)-1][0]
+	}
+	return nativeSpeechClip{
+		audio: unsafe.SliceData(clip.Audio.Samples), audioLength: uint64(len(clip.Audio.Samples)),
+		start: clip.Start, duration: clip.Duration, complete: clip.Complete, transcript: transcript,
+	}
+}
+
+func (f *fakeTextToSpeechBindings) freeBuffer(pointer unsafe.Pointer) {
+	f.freedBuffers = append(f.freedBuffers, pointer)
 }
 
 func (f *fakeTextToSpeechBindings) createTTSFromFiles(language string, filenames []string, options []Option) int32 {
@@ -244,15 +278,21 @@ func TestTextToSpeechSynthesizeReturnsGoOwnedAudio(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
+	require.Len(t, bindings.freedBuffers, 1)
+	assert.Equal(t, unsafe.Pointer(unsafe.SliceData(want.Samples)), bindings.freedBuffers[0])
+	bindings.audio.Samples[0] = 99
+	assert.Equal(t, float32(0.25), got.Samples[0])
 	assert.Equal(t, []string{"Hello world!"}, bindings.texts)
 	assert.Equal(t, [][]Option{options}, bindings.synthesizeOptions)
 }
 
 func TestTextToSpeechSynthesizeMapsNativeErrorToSentinel(t *testing.T) {
+	samples := []float32{1}
 	bindings := &fakeTextToSpeechBindings{
 		handle:         42,
 		synthesizeCode: rawErrorInvalidHandle,
 		errorMessage:   "Invalid handle",
+		nativeAudio:    &nativeAudio{pointer: &samples[0], length: 1, sampleRate: 24000},
 	}
 	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
 	require.NoError(t, err)
@@ -261,6 +301,24 @@ func TestTextToSpeechSynthesizeMapsNativeErrorToSentinel(t *testing.T) {
 	_, err = synthesizer.Synthesize("Hello")
 
 	require.ErrorIs(t, err, ErrInvalidHandle)
+	assert.Equal(t, []unsafe.Pointer{unsafe.Pointer(&samples[0])}, bindings.freedBuffers)
+}
+
+func TestTextToSpeechSynthesizeRejectsInvalidNativeAudio(t *testing.T) {
+	tests := []nativeAudio{
+		{length: 1, sampleRate: 24000},
+		{sampleRate: 0},
+	}
+	for _, output := range tests {
+		bindings := &fakeTextToSpeechBindings{handle: 42, nativeAudio: &output}
+		synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+		require.NoError(t, err)
+
+		_, err = synthesizer.Synthesize("Hello")
+
+		require.ErrorIs(t, err, ErrInvalidNativeOutput)
+		require.NoError(t, synthesizer.Close())
+	}
 }
 
 func TestTextToSpeechSynthesizeRejectsInvalidInput(t *testing.T) {
@@ -301,6 +359,7 @@ func TestTextToSpeechSynthesizePhonemesReturnsGoOwnedAudio(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
+	require.Len(t, bindings.freedBuffers, 1)
 	assert.Equal(t, []string{"həˈloʊ"}, bindings.phonemes)
 	assert.Equal(t, [][]Option{options}, bindings.phonemeOptions)
 }
@@ -362,6 +421,11 @@ func TestTextToSpeechExtractSpeechClipForwardsAndReturnsOwnedResult(t *testing.T
 
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
+	require.Len(t, bindings.freedBuffers, 2)
+	bindings.clip.Audio.Samples[0] = 99
+	bindings.clipTranscripts[0][0] = 'X'
+	assert.Equal(t, float32(0.1), got.Audio.Samples[0])
+	assert.Equal(t, "hello", got.Transcript)
 	assert.Equal(t, [][]float32{{0.25, -0.5}}, bindings.clipAudio)
 	assert.Equal(t, []int{24000}, bindings.clipSampleRates)
 	assert.Equal(t, [][]Option{options}, bindings.clipOptions)
@@ -384,14 +448,22 @@ func TestTextToSpeechExtractSpeechClipReturnsIncompleteProgress(t *testing.T) {
 
 func TestTextToSpeechExtractSpeechClipMapsErrors(t *testing.T) {
 	t.Run("native sentinel", func(t *testing.T) {
+		samples := []float32{1}
+		transcript := []byte{'x', 0}
 		bindings := &fakeTextToSpeechBindings{
 			handle: 42, clipCode: rawErrorInvalidHandle, errorMessage: "Invalid handle",
+			nativeClip: &nativeSpeechClip{
+				audio: &samples[0], audioLength: 1, transcript: &transcript[0],
+			},
 		}
 		synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
 		_, err = synthesizer.ExtractSpeechClip([]float32{0}, 16000)
 		require.ErrorIs(t, err, ErrInvalidHandle)
+		assert.ElementsMatch(t, []unsafe.Pointer{
+			unsafe.Pointer(&samples[0]), unsafe.Pointer(&transcript[0]),
+		}, bindings.freedBuffers)
 	})
 	t.Run("copy failure", func(t *testing.T) {
 		copyErr := errors.New("copy failed")
@@ -402,6 +474,18 @@ func TestTextToSpeechExtractSpeechClipMapsErrors(t *testing.T) {
 		_, err = synthesizer.ExtractSpeechClip([]float32{0}, 16000)
 		require.ErrorIs(t, err, copyErr)
 	})
+}
+
+func TestTextToSpeechExtractSpeechClipRejectsInvalidNativeOutput(t *testing.T) {
+	output := nativeSpeechClip{audioLength: 1, complete: true}
+	bindings := &fakeTextToSpeechBindings{handle: 42, nativeClip: &output}
+	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
+
+	_, err = synthesizer.ExtractSpeechClip([]float32{0}, 16000)
+
+	require.ErrorIs(t, err, ErrInvalidNativeOutput)
 }
 
 func TestTextToSpeechExtractSpeechClipRejectsInvalidStateAndInput(t *testing.T) {

@@ -20,16 +20,32 @@ type textToSpeechBindings interface {
 		memorySizes []uint64,
 		options []Option,
 	) int32
-	synthesize(handle int32, text string, options []Option) (Audio, int32, error)
-	synthesizePhonemes(handle int32, phonemes string, options []Option) (Audio, int32, error)
+	synthesize(handle int32, text string, options []Option) (nativeAudio, int32, error)
+	synthesizePhonemes(handle int32, phonemes string, options []Option) (nativeAudio, int32, error)
 	extractSpeechClip(
 		handle int32, audio []float32, sampleRate int, options []Option,
-	) (SpeechClip, int32, error)
+	) (nativeSpeechClip, int32, error)
+	freeBuffer(pointer unsafe.Pointer)
 	freeTTS(handle int32)
 	errorToString(code int32) string
 }
 
 type rawTextToSpeechBindings struct{}
+
+type nativeAudio struct {
+	pointer    *float32
+	length     uint64
+	sampleRate int32
+}
+
+type nativeSpeechClip struct {
+	audio       *float32
+	audioLength uint64
+	start       float32
+	duration    float32
+	complete    bool
+	transcript  *byte
+}
 
 func (rawTextToSpeechBindings) createTTSFromFiles(language string, filenames []string, options []Option) int32 {
 	converted := rawOptions(options)
@@ -67,7 +83,7 @@ func (rawTextToSpeechBindings) freeTTS(handle int32) {
 	raw.MoonshineFreeTtsSynthesizer(handle)
 }
 
-func (rawTextToSpeechBindings) synthesize(handle int32, text string, options []Option) (Audio, int32, error) {
+func (rawTextToSpeechBindings) synthesize(handle int32, text string, options []Option) (nativeAudio, int32, error) {
 	converted := rawOptions(options)
 	output := [][]float32{nil}
 	sizes := []uint64{0}
@@ -81,29 +97,16 @@ func (rawTextToSpeechBindings) synthesize(handle int32, text string, options []O
 		sizes,
 		sampleRates,
 	)
-	pointer := unsafe.SliceData(output[0])
-	if pointer != nil {
-		defer raw.MoonshineFreeBuffer(unsafe.Pointer(pointer))
-	}
-	if code < 0 {
-		return Audio{}, code, nil
-	}
-	if sizes[0] > uint64(^uint(0)>>1) {
-		return Audio{}, code, fmt.Errorf("audio sample count %d exceeds addressable memory", sizes[0])
-	}
-	if sizes[0] > 0 && pointer == nil {
-		return Audio{}, code, fmt.Errorf("native synthesis returned %d samples with a nil buffer", sizes[0])
-	}
-
-	samples := append([]float32(nil), unsafe.Slice(pointer, int(sizes[0]))...)
-	return Audio{Samples: samples, SampleRate: int(sampleRates[0])}, code, nil
+	return nativeAudio{
+		pointer: unsafe.SliceData(output[0]), length: sizes[0], sampleRate: sampleRates[0],
+	}, code, nil
 }
 
 func (rawTextToSpeechBindings) synthesizePhonemes(
 	handle int32,
 	phonemes string,
 	options []Option,
-) (Audio, int32, error) {
+) (nativeAudio, int32, error) {
 	converted := rawOptions(options)
 	output := [][]float32{nil}
 	sizes := []uint64{0}
@@ -117,22 +120,9 @@ func (rawTextToSpeechBindings) synthesizePhonemes(
 		sizes,
 		sampleRates,
 	)
-	pointer := unsafe.SliceData(output[0])
-	if pointer != nil {
-		defer raw.MoonshineFreeBuffer(unsafe.Pointer(pointer))
-	}
-	if code < 0 {
-		return Audio{}, code, nil
-	}
-	if sizes[0] > uint64(^uint(0)>>1) {
-		return Audio{}, code, fmt.Errorf("audio sample count %d exceeds addressable memory", sizes[0])
-	}
-	if sizes[0] > 0 && pointer == nil {
-		return Audio{}, code, fmt.Errorf("native phoneme synthesis returned %d samples with a nil buffer", sizes[0])
-	}
-
-	samples := append([]float32(nil), unsafe.Slice(pointer, int(sizes[0]))...)
-	return Audio{Samples: samples, SampleRate: int(sampleRates[0])}, code, nil
+	return nativeAudio{
+		pointer: unsafe.SliceData(output[0]), length: sizes[0], sampleRate: sampleRates[0],
+	}, code, nil
 }
 
 func (rawTextToSpeechBindings) extractSpeechClip(
@@ -140,7 +130,7 @@ func (rawTextToSpeechBindings) extractSpeechClip(
 	audio []float32,
 	sampleRate int,
 	options []Option,
-) (SpeechClip, int32, error) {
+) (nativeSpeechClip, int32, error) {
 	converted := rawOptions(options)
 	output := []raw.MoonshineSpeechClipT{{}}
 	code := raw.MoonshineExtractSpeechClip(
@@ -148,38 +138,18 @@ func (rawTextToSpeechBindings) extractSpeechClip(
 		converted, uint64(len(converted)), output,
 	)
 	output[0].Deref()
-	audioPointer := unsafe.SliceData(output[0].AudioData)
-	transcriptPointer := unsafe.SliceData(output[0].Transcript)
-	if audioPointer != nil {
-		defer raw.MoonshineFreeBuffer(unsafe.Pointer(audioPointer))
-	}
-	if transcriptPointer != nil {
-		defer raw.MoonshineFreeBuffer(unsafe.Pointer(transcriptPointer))
-	}
-	if code < 0 {
-		return SpeechClip{}, code, nil
-	}
-	if output[0].AudioLength > uint64(^uint(0)>>1) {
-		return SpeechClip{}, code, fmt.Errorf(
-			"speech clip sample count %d exceeds addressable memory", output[0].AudioLength,
-		)
-	}
-	if output[0].AudioLength > 0 && audioPointer == nil {
-		return SpeechClip{}, code, fmt.Errorf(
-			"native speech clip returned %d samples with a nil buffer", output[0].AudioLength,
-		)
-	}
-	samples := append(
-		[]float32(nil),
-		unsafe.Slice(audioPointer, int(output[0].AudioLength))...,
-	)
-	return SpeechClip{
-		Audio:      Audio{Samples: samples, SampleRate: 16000},
-		Start:      output[0].StartTime,
-		Duration:   output[0].SpeechDuration,
-		Complete:   output[0].IsComplete != 0,
-		Transcript: copyCString((*byte)(unsafe.Pointer(transcriptPointer))),
+	return nativeSpeechClip{
+		audio:       unsafe.SliceData(output[0].AudioData),
+		audioLength: output[0].AudioLength,
+		start:       output[0].StartTime,
+		duration:    output[0].SpeechDuration,
+		complete:    output[0].IsComplete != 0,
+		transcript:  unsafe.SliceData(output[0].Transcript),
 	}, code, nil
+}
+
+func (rawTextToSpeechBindings) freeBuffer(pointer unsafe.Pointer) {
+	raw.MoonshineFreeBuffer(pointer)
 }
 
 func (rawTextToSpeechBindings) errorToString(code int32) string {
@@ -360,7 +330,10 @@ func (t *TextToSpeech) Synthesize(text string, options ...Option) (Audio, error)
 		return Audio{}, ErrClosed
 	}
 
-	audio, code, err := t.bindings.synthesize(t.handle, text, options)
+	native, code, err := t.bindings.synthesize(t.handle, text, options)
+	if native.pointer != nil {
+		defer t.bindings.freeBuffer(unsafe.Pointer(native.pointer))
+	}
 	runtime.KeepAlive(t)
 	if code < 0 {
 		return Audio{}, fmt.Errorf(
@@ -368,6 +341,10 @@ func (t *TextToSpeech) Synthesize(text string, options ...Option) (Audio, error)
 			nativeError(code, t.bindings.errorToString(code)),
 		)
 	}
+	if err != nil {
+		return Audio{}, fmt.Errorf("moonshine: copy synthesized audio: %w", err)
+	}
+	audio, err := copyNativeAudio(native)
 	if err != nil {
 		return Audio{}, fmt.Errorf("moonshine: copy synthesized audio: %w", err)
 	}
@@ -393,7 +370,10 @@ func (t *TextToSpeech) SynthesizePhonemes(phonemes string, options ...Option) (A
 		return Audio{}, ErrClosed
 	}
 
-	audio, code, err := t.bindings.synthesizePhonemes(t.handle, phonemes, options)
+	native, code, err := t.bindings.synthesizePhonemes(t.handle, phonemes, options)
+	if native.pointer != nil {
+		defer t.bindings.freeBuffer(unsafe.Pointer(native.pointer))
+	}
 	runtime.KeepAlive(t)
 	if code < 0 {
 		return Audio{}, fmt.Errorf(
@@ -401,6 +381,10 @@ func (t *TextToSpeech) SynthesizePhonemes(phonemes string, options ...Option) (A
 			nativeError(code, t.bindings.errorToString(code)),
 		)
 	}
+	if err != nil {
+		return Audio{}, fmt.Errorf("moonshine: copy phoneme synthesis audio: %w", err)
+	}
+	audio, err := copyNativeAudio(native)
 	if err != nil {
 		return Audio{}, fmt.Errorf("moonshine: copy phoneme synthesis audio: %w", err)
 	}
@@ -428,7 +412,13 @@ func (t *TextToSpeech) ExtractSpeechClip(
 	if t.closed {
 		return SpeechClip{}, ErrClosed
 	}
-	clip, code, err := t.bindings.extractSpeechClip(t.handle, audio, sampleRate, options)
+	native, code, err := t.bindings.extractSpeechClip(t.handle, audio, sampleRate, options)
+	if native.audio != nil {
+		defer t.bindings.freeBuffer(unsafe.Pointer(native.audio))
+	}
+	if native.transcript != nil {
+		defer t.bindings.freeBuffer(unsafe.Pointer(native.transcript))
+	}
 	runtime.KeepAlive(t)
 	if code < 0 {
 		return SpeechClip{}, fmt.Errorf(
@@ -439,7 +429,50 @@ func (t *TextToSpeech) ExtractSpeechClip(
 	if err != nil {
 		return SpeechClip{}, fmt.Errorf("moonshine: copy speech clip: %w", err)
 	}
+	clip, err := copyNativeSpeechClip(native)
+	if err != nil {
+		return SpeechClip{}, fmt.Errorf("moonshine: copy speech clip: %w", err)
+	}
 	return clip, nil
+}
+
+func copyNativeAudio(native nativeAudio) (Audio, error) {
+	if native.length > uint64(^uint(0)>>1) {
+		return Audio{}, fmt.Errorf("audio sample count %d exceeds addressable memory: %w", native.length, ErrInvalidNativeOutput)
+	}
+	if native.length > 0 && native.pointer == nil {
+		return Audio{}, fmt.Errorf("native audio returned %d samples with a nil buffer: %w", native.length, ErrInvalidNativeOutput)
+	}
+	if native.sampleRate <= 0 {
+		return Audio{}, fmt.Errorf("native audio returned invalid sample rate %d: %w", native.sampleRate, ErrInvalidNativeOutput)
+	}
+	return Audio{
+		Samples:    append([]float32(nil), unsafe.Slice(native.pointer, int(native.length))...),
+		SampleRate: int(native.sampleRate),
+	}, nil
+}
+
+func copyNativeSpeechClip(native nativeSpeechClip) (SpeechClip, error) {
+	if native.audioLength > uint64(^uint(0)>>1) {
+		return SpeechClip{}, fmt.Errorf("speech clip sample count %d exceeds addressable memory: %w", native.audioLength, ErrInvalidNativeOutput)
+	}
+	if native.audioLength > 0 && native.audio == nil {
+		return SpeechClip{}, fmt.Errorf("native speech clip returned %d samples with a nil buffer: %w", native.audioLength, ErrInvalidNativeOutput)
+	}
+	sampleRate := 0
+	if native.complete || native.audioLength > 0 {
+		sampleRate = 16000
+	}
+	return SpeechClip{
+		Audio: Audio{
+			Samples:    append([]float32(nil), unsafe.Slice(native.audio, int(native.audioLength))...),
+			SampleRate: sampleRate,
+		},
+		Start:      native.start,
+		Duration:   native.duration,
+		Complete:   native.complete,
+		Transcript: copyCString(native.transcript),
+	}, nil
 }
 
 func (t *TextToSpeech) finalize() {
