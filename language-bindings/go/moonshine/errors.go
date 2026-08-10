@@ -18,6 +18,12 @@ var (
 	// ErrInvalidNativeOutput indicates that a successful native call returned
 	// missing or malformed data.
 	ErrInvalidNativeOutput = errors.New("moonshine: invalid native output")
+	// ErrInvalidManifest indicates unsafe or incomplete download metadata.
+	ErrInvalidManifest = errors.New("moonshine: invalid download manifest")
+	// ErrAssetDownload indicates an HTTP or filesystem download failure.
+	ErrAssetDownload = errors.New("moonshine: asset download failed")
+	// ErrAssetIntegrity indicates that downloaded bytes failed declared checks.
+	ErrAssetIntegrity = errors.New("moonshine: asset integrity check failed")
 )
 
 func nativeError(code int32, message string) error {
