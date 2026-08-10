@@ -3,6 +3,7 @@ package moonshine
 import (
 	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"unsafe"
@@ -12,6 +13,13 @@ import (
 
 type textToSpeechBindings interface {
 	createTTSFromFiles(language string, filenames []string, options []Option) int32
+	createTTSFromMemory(
+		language string,
+		filenames []string,
+		memory [][]byte,
+		memorySizes []uint64,
+		options []Option,
+	) int32
 	synthesize(handle int32, text string, options []Option) (Audio, int32, error)
 	freeTTS(handle int32)
 	errorToString(code int32) string
@@ -25,6 +33,26 @@ func (rawTextToSpeechBindings) createTTSFromFiles(language string, filenames []s
 		language,
 		filenames,
 		uint64(len(filenames)),
+		converted,
+		uint64(len(converted)),
+		raw.MoonshineHeaderVersion,
+	)
+}
+
+func (rawTextToSpeechBindings) createTTSFromMemory(
+	language string,
+	filenames []string,
+	memory [][]byte,
+	memorySizes []uint64,
+	options []Option,
+) int32 {
+	converted := rawOptions(options)
+	return raw.MoonshineCreateTtsSynthesizerFromMemory(
+		language,
+		filenames,
+		uint64(len(filenames)),
+		memory,
+		memorySizes,
 		converted,
 		uint64(len(converted)),
 		raw.MoonshineHeaderVersion,
@@ -79,6 +107,8 @@ func (rawTextToSpeechBindings) errorToString(code int32) string {
 type TextToSpeech struct {
 	bindings  textToSpeechBindings
 	handle    int32
+	memory    [][]byte
+	pinner    *runtime.Pinner
 	mu        sync.RWMutex
 	closed    bool
 	closeOnce sync.Once
@@ -96,16 +126,8 @@ func newTextToSpeechFromFiles(
 	files []string,
 	options ...Option,
 ) (*TextToSpeech, error) {
-	if language == "" || strings.IndexByte(language, 0) >= 0 {
-		return nil, fmt.Errorf("invalid TTS language %q: %w", language, ErrInvalidArgument)
-	}
-	if err := validateOptions(options); err != nil {
+	if err := validateTextToSpeechInput(language, files, options); err != nil {
 		return nil, err
-	}
-	for _, filename := range files {
-		if filename == "" || strings.IndexByte(filename, 0) >= 0 {
-			return nil, fmt.Errorf("invalid TTS filename %q: %w", filename, ErrInvalidArgument)
-		}
 	}
 
 	filenames := append([]string(nil), files...)
@@ -123,6 +145,82 @@ func newTextToSpeechFromFiles(
 	return synthesizer, nil
 }
 
+// NewTextToSpeechFromMemory creates a synthesizer from canonical asset keys
+// and buffers. The buffers must not be modified until Close.
+func NewTextToSpeechFromMemory(
+	language string,
+	files map[string][]byte,
+	options ...Option,
+) (*TextToSpeech, error) {
+	return newTextToSpeechFromMemory(rawTextToSpeechBindings{}, language, files, options...)
+}
+
+func newTextToSpeechFromMemory(
+	bindings textToSpeechBindings,
+	language string,
+	files map[string][]byte,
+	options ...Option,
+) (*TextToSpeech, error) {
+	if len(files) == 0 {
+		return nil, fmt.Errorf("TTS file map is empty: %w", ErrInvalidArgument)
+	}
+	filenames := make([]string, 0, len(files))
+	for filename := range files {
+		filenames = append(filenames, filename)
+	}
+	if err := validateTextToSpeechInput(language, filenames, options); err != nil {
+		return nil, err
+	}
+	sort.Strings(filenames)
+
+	memory := make([][]byte, len(filenames))
+	memorySizes := make([]uint64, len(filenames))
+	pinner := new(runtime.Pinner)
+	for index, filename := range filenames {
+		memory[index] = files[filename]
+		memorySizes[index] = uint64(len(memory[index]))
+		if len(memory[index]) > 0 {
+			pinner.Pin(&memory[index][0])
+		}
+	}
+
+	handle := bindings.createTTSFromMemory(
+		language, filenames, memory, memorySizes, options,
+	)
+	if handle < 0 {
+		pinner.Unpin()
+		return nil, fmt.Errorf(
+			"moonshine: create TTS synthesizer from memory for %q: %w",
+			language,
+			nativeError(handle, bindings.errorToString(handle)),
+		)
+	}
+
+	synthesizer := &TextToSpeech{
+		bindings: bindings,
+		handle:   handle,
+		memory:   memory,
+		pinner:   pinner,
+	}
+	runtime.SetFinalizer(synthesizer, (*TextToSpeech).finalize)
+	return synthesizer, nil
+}
+
+func validateTextToSpeechInput(language string, files []string, options []Option) error {
+	if language == "" || strings.IndexByte(language, 0) >= 0 {
+		return fmt.Errorf("invalid TTS language %q: %w", language, ErrInvalidArgument)
+	}
+	if err := validateOptions(options); err != nil {
+		return err
+	}
+	for _, filename := range files {
+		if filename == "" || strings.IndexByte(filename, 0) >= 0 {
+			return fmt.Errorf("invalid TTS filename %q: %w", filename, ErrInvalidArgument)
+		}
+	}
+	return nil
+}
+
 // Close releases the native synthesizer. It is safe to call Close more than
 // once.
 func (t *TextToSpeech) Close() error {
@@ -137,6 +235,11 @@ func (t *TextToSpeech) Close() error {
 		runtime.SetFinalizer(t, nil)
 		t.closed = true
 		t.bindings.freeTTS(t.handle)
+		if t.pinner != nil {
+			t.pinner.Unpin()
+			t.pinner = nil
+		}
+		t.memory = nil
 	})
 	return nil
 }

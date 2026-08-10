@@ -15,6 +15,8 @@ type fakeTextToSpeechBindings struct {
 	errorMessage      string
 	languages         []string
 	filenames         [][]string
+	memory            [][][]byte
+	memorySizes       [][]uint64
 	options           [][]Option
 	freed             []int32
 	audio             Audio
@@ -33,6 +35,21 @@ func (f *fakeTextToSpeechBindings) synthesize(_ int32, text string, options []Op
 func (f *fakeTextToSpeechBindings) createTTSFromFiles(language string, filenames []string, options []Option) int32 {
 	f.languages = append(f.languages, language)
 	f.filenames = append(f.filenames, append([]string(nil), filenames...))
+	f.options = append(f.options, append([]Option(nil), options...))
+	return f.handle
+}
+
+func (f *fakeTextToSpeechBindings) createTTSFromMemory(
+	language string,
+	filenames []string,
+	memory [][]byte,
+	memorySizes []uint64,
+	options []Option,
+) int32 {
+	f.languages = append(f.languages, language)
+	f.filenames = append(f.filenames, append([]string(nil), filenames...))
+	f.memory = append(f.memory, append([][]byte(nil), memory...))
+	f.memorySizes = append(f.memorySizes, append([]uint64(nil), memorySizes...))
 	f.options = append(f.options, append([]Option(nil), options...))
 	return f.handle
 }
@@ -68,6 +85,59 @@ func TestNewTextToSpeechFromFilesMapsNativeErrorToSentinel(t *testing.T) {
 	}
 
 	synthesizer, err := newTextToSpeechFromFiles(bindings, "xx_invalid", nil)
+
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Nil(t, synthesizer)
+	assert.Empty(t, bindings.freed)
+}
+
+func TestNewTextToSpeechFromMemorySortsPinsAndReleasesFiles(t *testing.T) {
+	bindings := &fakeTextToSpeechBindings{handle: 42}
+	files := map[string][]byte{
+		"kokoro/model.ort":   {3},
+		"kokoro/config.json": {1, 2},
+	}
+	options := []Option{{Name: "voice", Value: "af_heart"}}
+
+	synthesizer, err := newTextToSpeechFromMemory(bindings, "en_us", files, options...)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"en_us"}, bindings.languages)
+	assert.Equal(t, [][]string{{"kokoro/config.json", "kokoro/model.ort"}}, bindings.filenames)
+	assert.Equal(t, [][][]byte{{{1, 2}, {3}}}, bindings.memory)
+	assert.Equal(t, [][]uint64{{2, 1}}, bindings.memorySizes)
+	assert.Equal(t, [][]Option{options}, bindings.options)
+	assert.NotNil(t, synthesizer.pinner)
+	require.NoError(t, synthesizer.Close())
+	assert.Nil(t, synthesizer.pinner)
+	assert.Nil(t, synthesizer.memory)
+	assert.Equal(t, []int32{42}, bindings.freed)
+}
+
+func TestNewTextToSpeechFromMemoryRejectsInvalidFiles(t *testing.T) {
+	tests := []map[string][]byte{
+		nil,
+		{},
+		{"": {1}},
+		{"bad\x00name": {1}},
+	}
+	for _, files := range tests {
+		bindings := &fakeTextToSpeechBindings{handle: 42}
+		synthesizer, err := newTextToSpeechFromMemory(bindings, "en_us", files)
+		require.ErrorIs(t, err, ErrInvalidArgument)
+		assert.Nil(t, synthesizer)
+		assert.Empty(t, bindings.languages)
+	}
+}
+
+func TestNewTextToSpeechFromMemoryReleasesPinsAfterNativeError(t *testing.T) {
+	bindings := &fakeTextToSpeechBindings{
+		handle: rawErrorInvalidArgument, errorMessage: "Invalid argument",
+	}
+
+	synthesizer, err := newTextToSpeechFromMemory(
+		bindings, "en_us", map[string][]byte{"kokoro/model.ort": {1}},
+	)
 
 	require.ErrorIs(t, err, ErrInvalidArgument)
 	assert.Nil(t, synthesizer)
