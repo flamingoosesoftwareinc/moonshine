@@ -268,6 +268,30 @@ func TestNativeSTTCatalog(t *testing.T) {
 	}
 }
 
+func TestNativeEmbeddingManifestAndCatalog(t *testing.T) {
+	catalog, err := EmbeddingCatalog()
+	require.NoError(t, err)
+	require.NotEmpty(t, catalog.Models)
+	model := catalog.Models[0]
+	assert.NotEmpty(t, model.Name)
+	assert.NotEmpty(t, model.EnglishName)
+	assert.NotEmpty(t, model.DownloadURL)
+	assert.Contains(t, model.Variants, model.DefaultVariant)
+
+	manifest, err := EmbeddingDependencies(model.Name, model.DefaultVariant)
+	require.NoError(t, err)
+	require.Len(t, manifest.Groups, 1)
+	var names []string
+	for _, file := range manifest.Groups[0].Files {
+		names = append(names, file.Name)
+		assert.NotEmpty(t, file.URL)
+		require.NotNil(t, file.Size)
+		assert.Positive(t, *file.Size)
+	}
+	assert.Contains(t, names, "model_"+model.DefaultVariant+".ort")
+	assert.Contains(t, names, "tokenizer.bin")
+}
+
 func transcriptText(transcript Transcript) string {
 	var text strings.Builder
 	for _, line := range transcript.Lines {

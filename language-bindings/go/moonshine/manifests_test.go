@@ -8,14 +8,16 @@ import (
 )
 
 type fakeManifestBindings struct {
-	sttCode      int32
-	diarCode     int32
-	catalogCode  int32
-	errorMessage string
-	output       []byte
-	languages    []string
-	options      [][]Option
-	freed        []*byte
+	sttCode              int32
+	diarCode             int32
+	catalogCode          int32
+	embeddingCode        int32
+	embeddingCatalogCode int32
+	errorMessage         string
+	output               []byte
+	languages            []string
+	options              [][]Option
+	freed                []*byte
 }
 
 func (f *fakeManifestBindings) setOutput(output **byte) {
@@ -39,6 +41,18 @@ func (f *fakeManifestBindings) diarizationDependencies(output **byte) int32 {
 func (f *fakeManifestBindings) sttCatalog(output **byte) int32 {
 	f.setOutput(output)
 	return f.catalogCode
+}
+
+func (f *fakeManifestBindings) embeddingDependencies(model string, options []Option, output **byte) int32 {
+	f.languages = append(f.languages, model)
+	f.options = append(f.options, append([]Option(nil), options...))
+	f.setOutput(output)
+	return f.embeddingCode
+}
+
+func (f *fakeManifestBindings) embeddingCatalog(output **byte) int32 {
+	f.setOutput(output)
+	return f.embeddingCatalogCode
 }
 
 func (f *fakeManifestBindings) freeBuffer(pointer *byte) {

@@ -33,6 +33,8 @@ type manifestBindings interface {
 	sttDependencies(language string, options []Option, output **byte) int32
 	diarizationDependencies(output **byte) int32
 	sttCatalog(output **byte) int32
+	embeddingDependencies(model string, options []Option, output **byte) int32
+	embeddingCatalog(output **byte) int32
 	freeBuffer(pointer *byte)
 	errorToString(code int32) string
 }
@@ -50,6 +52,15 @@ func (rawManifestBindings) diarizationDependencies(output **byte) int32 {
 
 func (rawManifestBindings) sttCatalog(output **byte) int32 {
 	return raw.MoonshineGetSttCatalog(output)
+}
+
+func (rawManifestBindings) embeddingDependencies(model string, options []Option, output **byte) int32 {
+	converted := rawOptions(options)
+	return raw.MoonshineGetEmbeddingDependencies(model, converted, uint64(len(converted)), output)
+}
+
+func (rawManifestBindings) embeddingCatalog(output **byte) int32 {
+	return raw.MoonshineGetEmbeddingCatalog(output)
 }
 
 func (rawManifestBindings) freeBuffer(pointer *byte) {
