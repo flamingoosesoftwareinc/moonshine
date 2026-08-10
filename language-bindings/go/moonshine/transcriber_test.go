@@ -39,6 +39,7 @@ type fakeTranscriberBindings struct {
 	streamTranscript      Transcript
 	streamTranscriptFlags []uint32
 	streamTranscriptErr   error
+	streamTranscribeHook  func()
 }
 
 func (f *fakeTranscriberBindings) addAudioToStream(
@@ -55,6 +56,9 @@ func (f *fakeTranscriberBindings) addAudioToStream(
 
 func (f *fakeTranscriberBindings) transcribeStream(_, _ int32, flags uint32) (Transcript, int32, error) {
 	f.streamTranscriptFlags = append(f.streamTranscriptFlags, flags)
+	if f.streamTranscribeHook != nil {
+		f.streamTranscribeHook()
+	}
 	return f.streamTranscript, f.streamCode, f.streamTranscriptErr
 }
 
