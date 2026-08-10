@@ -1,0 +1,78 @@
+name: Go bindings
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/go-bindings.yml
+      - core/**
+      - language-bindings/go/**
+      - scripts/build-go.sh
+      - scripts/check-go-generated.sh
+      - scripts/fetch-voice-assets.sh
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/go-bindings.yml
+      - core/**
+      - language-bindings/go/**
+      - scripts/build-go.sh
+      - scripts/check-go-generated.sh
+      - scripts/fetch-voice-assets.sh
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-bindings-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generated:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: language-bindings/go/go.mod
+          cache-dependency-path: language-bindings/go/go.sum
+      - name: Verify generated raw bindings
+        run: ./scripts/check-go-generated.sh
+
+  model-free:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: language-bindings/go/go.mod
+          cache-dependency-path: language-bindings/go/go.sum
+      - name: Fetch only native build LFS sources
+        run: |
+          git lfs pull --include="core/cpp-annote/src/community1_cpp_annote_embedded.cpp,core/moonshine-tts/src/zipvoice-voices-data.cpp"
+      - name: Build and test
+        run: ./scripts/build-go.sh
+      - name: Race test
+        run: ./scripts/build-go.sh race
+
+  parity:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: language-bindings/go/go.mod
+          cache-dependency-path: language-bindings/go/go.sum
+      - name: Fetch only native build LFS sources
+        run: |
+          git lfs pull --include="core/cpp-annote/src/community1_cpp_annote_embedded.cpp,core/moonshine-tts/src/zipvoice-voices-data.cpp"
+      - name: Run all model-backed parity suites
+        run: ./scripts/build-go.sh parity
+      - name: Run synthesis-to-transcription confidence demo
+        run: ./scripts/build-go.sh roundtrip

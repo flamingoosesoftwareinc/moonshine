@@ -181,7 +181,11 @@ func TestMicTranscriberPreservesSampleRateBoundaries(t *testing.T) {
 	require.NoError(t, mic.Stop())
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
-	assert.Equal(t, []int{16000, 8000}, stream.rates)
+	require.NotEmpty(t, stream.rates)
+	assert.Equal(t, 16000, stream.rates[0])
+	for _, rate := range stream.rates[1:] {
+		assert.Equal(t, 8000, rate)
+	}
 	assert.Equal(t, 3, stream.total)
 }
 

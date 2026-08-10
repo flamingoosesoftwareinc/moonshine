@@ -9,6 +9,9 @@ GO_DIR="${REPO_ROOT_DIR}/language-bindings/go"
 GO_TEST_ARGS=()
 case "${1:-}" in
 	"") ;;
+	race)
+		GO_TEST_ARGS+=("-race")
+		;;
 	integration)
 		# Model-backed parity tests are opt-in. The fetch is idempotent and
 		# downloads only the Tiny English fixture used by Swift and Android.
@@ -37,8 +40,15 @@ case "${1:-}" in
 		"${SCRIPTS_DIR}/fetch-voice-assets.sh" tts-smoke
 		GO_TEST_ARGS+=("-tags=tts_integration")
 		;;
+	parity)
+		# Complete model-backed parity gate. Embedding assets are resolved by
+		# the public manifest/downloader API inside its integration test.
+		"${SCRIPTS_DIR}/fetch-voice-assets.sh" tiny-en
+		"${SCRIPTS_DIR}/fetch-voice-assets.sh" tts-smoke
+		GO_TEST_ARGS+=("-tags=integration,g2p_integration,tts_integration,embedding_integration")
+		;;
 	*)
-		echo "usage: $0 [integration|roundtrip|embedding-integration|g2p-integration|tts-integration]" >&2
+		echo "usage: $0 [race|integration|roundtrip|embedding-integration|g2p-integration|tts-integration|parity]" >&2
 		exit 2
 		;;
 esac
