@@ -31,6 +31,7 @@ type DownloadFile struct {
 
 type manifestBindings interface {
 	g2pDependencies(languages string, options []Option, output **byte) int32
+	ttsDependencies(languages string, options []Option, output **byte) int32
 	sttDependencies(language string, options []Option, output **byte) int32
 	diarizationDependencies(output **byte) int32
 	sttCatalog(output **byte) int32
@@ -45,6 +46,11 @@ type rawManifestBindings struct{}
 func (rawManifestBindings) g2pDependencies(languages string, options []Option, output **byte) int32 {
 	converted := rawOptions(options)
 	return raw.MoonshineGetG2pDependencies(languages, converted, uint64(len(converted)), output)
+}
+
+func (rawManifestBindings) ttsDependencies(languages string, options []Option, output **byte) int32 {
+	converted := rawOptions(options)
+	return raw.MoonshineGetTtsDependencies(languages, converted, uint64(len(converted)), output)
 }
 
 func (rawManifestBindings) sttDependencies(language string, options []Option, output **byte) int32 {
@@ -84,16 +90,12 @@ func G2PDependencies(languages []string, options ...Option) ([]string, error) {
 }
 
 func g2pDependencies(bindings manifestBindings, languages []string, options ...Option) ([]string, error) {
-	if err := validateOptions(options); err != nil {
+	joined, err := joinManifestLanguages("G2P", languages, options)
+	if err != nil {
 		return nil, err
 	}
-	for _, language := range languages {
-		if language == "" || strings.IndexByte(language, 0) >= 0 || strings.Contains(language, ",") {
-			return nil, fmt.Errorf("invalid G2P language %q: %w", language, ErrInvalidArgument)
-		}
-	}
 	var output *byte
-	code := bindings.g2pDependencies(strings.Join(languages, ","), options, &output)
+	code := bindings.g2pDependencies(joined, options, &output)
 	if output != nil {
 		defer bindings.freeBuffer(output)
 	}
@@ -117,6 +119,36 @@ func g2pDependencies(bindings manifestBindings, languages []string, options ...O
 		}
 	}
 	return keys, nil
+}
+
+// TTSDependencies returns the native download manifest for the requested
+// languages. An empty language slice requests every known language.
+func TTSDependencies(languages []string, options ...Option) (DownloadManifest, error) {
+	return ttsDependencies(rawManifestBindings{}, languages, options...)
+}
+
+func ttsDependencies(
+	bindings manifestBindings, languages []string, options ...Option,
+) (DownloadManifest, error) {
+	joined, err := joinManifestLanguages("TTS", languages, options)
+	if err != nil {
+		return DownloadManifest{}, err
+	}
+	return loadManifest(bindings, "get TTS dependencies", func(output **byte) int32 {
+		return bindings.ttsDependencies(joined, options, output)
+	})
+}
+
+func joinManifestLanguages(kind string, languages []string, options []Option) (string, error) {
+	if err := validateOptions(options); err != nil {
+		return "", err
+	}
+	for _, language := range languages {
+		if language == "" || strings.IndexByte(language, 0) >= 0 || strings.Contains(language, ",") {
+			return "", fmt.Errorf("invalid %s language %q: %w", kind, language, ErrInvalidArgument)
+		}
+	}
+	return strings.Join(languages, ","), nil
 }
 
 // STTDependencies returns the native download manifest for a language and

@@ -10,6 +10,7 @@ import (
 type fakeManifestBindings struct {
 	sttCode              int32
 	g2pCode              int32
+	ttsCode              int32
 	diarCode             int32
 	catalogCode          int32
 	embeddingCode        int32
@@ -28,6 +29,15 @@ func (f *fakeManifestBindings) g2pDependencies(
 	f.options = append(f.options, append([]Option(nil), options...))
 	f.setOutput(output)
 	return f.g2pCode
+}
+
+func (f *fakeManifestBindings) ttsDependencies(
+	languages string, options []Option, output **byte,
+) int32 {
+	f.languages = append(f.languages, languages)
+	f.options = append(f.options, append([]Option(nil), options...))
+	f.setOutput(output)
+	return f.ttsCode
 }
 
 func (f *fakeManifestBindings) setOutput(output **byte) {
@@ -129,6 +139,52 @@ func TestG2PDependenciesRejectsInvalidInputAndOutput(t *testing.T) {
 	_, err = g2pDependencies(bindings, []string{"en_us"})
 	require.ErrorIs(t, err, ErrInvalidNativeOutput)
 	assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+}
+
+func TestTTSDependenciesDecodesForwardsAndFreesManifest(t *testing.T) {
+	bindings := &fakeManifestBindings{output: manifestJSON(`{
+		"groups":[{"base_url":"https://example.test/tts","files":[
+			{"name":"en_us/model.ort","url":"https://example.test/tts/en_us/model.ort","size":42,"checksum":"abc","checksum_type":"crc32c"}
+		]}]}`)}
+	options := []Option{{Name: "voice", Value: "piper_en_US-amy-low"}}
+
+	manifest, err := ttsDependencies(bindings, []string{"en_us", "es_mx"}, options...)
+
+	require.NoError(t, err)
+	require.Len(t, manifest.Groups, 1)
+	assert.Equal(t, "en_us/model.ort", manifest.Groups[0].Files[0].Name)
+	assert.Equal(t, []string{"en_us,es_mx"}, bindings.languages)
+	assert.Equal(t, [][]Option{options}, bindings.options)
+	assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+}
+
+func TestTTSDependenciesAllowsAllLanguages(t *testing.T) {
+	bindings := &fakeManifestBindings{output: manifestJSON(`{"groups":[]}`)}
+	manifest, err := ttsDependencies(bindings, nil)
+	require.NoError(t, err)
+	assert.Empty(t, manifest.Groups)
+	assert.Equal(t, []string{""}, bindings.languages)
+}
+
+func TestTTSDependenciesMapsErrorsAndRejectsInvalidInput(t *testing.T) {
+	bindings := &fakeManifestBindings{
+		ttsCode: rawErrorInvalidArgument, errorMessage: "Invalid argument",
+		output: manifestJSON(`{"groups":[]}`),
+	}
+	_, err := ttsDependencies(bindings, []string{"unknown"})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+
+	for _, languages := range [][]string{{""}, {"en\x00us"}, {"en_us,es_mx"}} {
+		bindings = &fakeManifestBindings{}
+		_, err = ttsDependencies(bindings, languages)
+		require.ErrorIs(t, err, ErrInvalidArgument)
+		assert.Empty(t, bindings.languages)
+	}
+	bindings = &fakeManifestBindings{}
+	_, err = ttsDependencies(bindings, []string{"en_us"}, Option{})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Empty(t, bindings.languages)
 }
 
 func TestSTTDependenciesDecodesAndFreesNativeManifest(t *testing.T) {
