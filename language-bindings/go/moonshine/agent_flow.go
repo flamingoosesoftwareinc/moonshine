@@ -357,6 +357,7 @@ func (a *AgentFlow) stopRun(run *agentRun) error {
 		run.stopping = true
 		run.mu.Unlock()
 		run.cancel()
+		a.cancelActiveDialog(context.Canceled)
 		select {
 		case run.wake <- struct{}{}:
 		default:

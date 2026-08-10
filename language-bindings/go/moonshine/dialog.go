@@ -262,6 +262,17 @@ func (a *AgentFlow) Cancel() bool {
 	return true
 }
 
+func (a *AgentFlow) cancelActiveDialog(cause error) {
+	a.mu.RLock()
+	session := a.activeDialog
+	a.mu.RUnlock()
+	if session == nil {
+		return
+	}
+	session.cancel(cause)
+	<-session.done
+}
+
 // Say speaks text and waits for playback to finish.
 func (d *Dialog) Say(text string, options ...Option) error {
 	if d == nil || d.session == nil {
