@@ -130,6 +130,86 @@ func TestNativeTranscriberTranscribesWAVFixtures(t *testing.T) {
 	}
 }
 
+func TestNativeStreamTranscribesWAVFixtures(t *testing.T) {
+	tests := []struct {
+		filename string
+		phrases  []string
+	}{
+		{filename: "beckett.wav"},
+		{filename: "two_cities.wav", phrases: []string{"best of times", "worst of times"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.filename, func(t *testing.T) {
+			transcriber, err := NewTranscriber(tinyEnglishModelPath(t), ModelArchTiny)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+			stream, err := transcriber.NewStream()
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, stream.Close()) })
+			require.NoError(t, stream.Start())
+
+			wav, err := testasset.LoadWAV(filepath.Join(testAssetsPath(t), test.filename))
+			require.NoError(t, err)
+			chunkSize := wav.SampleRate / 10
+			var transcript Transcript
+			chunksSinceUpdate := 0
+			for offset := 0; offset < len(wav.Samples); offset += chunkSize {
+				end := min(offset+chunkSize, len(wav.Samples))
+				require.NoError(t, stream.AddAudio(wav.Samples[offset:end], wav.SampleRate))
+				chunksSinceUpdate++
+				if chunksSinceUpdate == 5 {
+					transcript, err = stream.Transcript()
+					require.NoError(t, err)
+					chunksSinceUpdate = 0
+				}
+			}
+			require.NoError(t, stream.Stop())
+
+			transcript, err = stream.Transcript(FlagForceUpdate)
+			require.NoError(t, err)
+			require.NotEmpty(t, transcript.Lines)
+			allText := strings.ToLower(transcriptText(transcript))
+			for _, phrase := range test.phrases {
+				assert.Contains(t, allText, phrase)
+			}
+			for _, line := range transcript.Lines {
+				assert.NotEmpty(t, line.Text)
+				assert.Positive(t, line.Duration)
+			}
+		})
+	}
+}
+
+func TestNativeStreamManualSnapshotsAndEmptyAudio(t *testing.T) {
+	transcriber, err := NewTranscriber(tinyEnglishModelPath(t), ModelArchTiny)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+	stream, err := transcriber.NewStream()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, stream.Close()) })
+	require.NoError(t, stream.Start())
+	require.NoError(t, stream.AddAudio(nil, 16000))
+
+	first, err := stream.Transcript()
+	require.NoError(t, err)
+	second, err := stream.Transcript(FlagForceUpdate)
+	require.NoError(t, err)
+	require.NoError(t, stream.Stop())
+
+	assert.Empty(t, first.Lines)
+	assert.Empty(t, second.Lines)
+}
+
+func transcriptText(transcript Transcript) string {
+	var text strings.Builder
+	for _, line := range transcript.Lines {
+		text.WriteString(line.Text)
+		text.WriteByte(' ')
+	}
+	return text.String()
+}
+
 func tinyEnglishModelPath(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(testAssetsPath(t), "tiny-en")
