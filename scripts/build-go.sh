@@ -21,8 +21,13 @@ case "${1:-}" in
 		"${SCRIPTS_DIR}/fetch-voice-assets.sh" tiny-en
 		"${SCRIPTS_DIR}/fetch-voice-assets.sh" tts-smoke
 		;;
+	embedding-integration)
+		# Explicit large-model test. The Go test resolves and downloads the
+		# embedding manifest through the public downloader API.
+		GO_TEST_ARGS+=("-tags=integration,embedding_integration")
+		;;
 	*)
-		echo "usage: $0 [integration|roundtrip]" >&2
+		echo "usage: $0 [integration|roundtrip|embedding-integration]" >&2
 		exit 2
 		;;
 esac
