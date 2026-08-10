@@ -27,6 +27,10 @@ type transcriberBindings interface {
 		flags uint32,
 	) (Transcript, int32, error)
 	freeTranscriber(handle int32)
+	createStream(transcriberHandle int32, flags uint32) int32
+	startStream(transcriberHandle, streamHandle int32) int32
+	stopStream(transcriberHandle, streamHandle int32) int32
+	freeStream(transcriberHandle, streamHandle int32) int32
 	errorToString(code int32) string
 }
 
@@ -94,6 +98,22 @@ func (rawTranscriberBindings) freeTranscriber(handle int32) {
 	raw.MoonshineFreeTranscriber(handle)
 }
 
+func (rawTranscriberBindings) createStream(transcriberHandle int32, flags uint32) int32 {
+	return raw.MoonshineCreateStream(transcriberHandle, flags)
+}
+
+func (rawTranscriberBindings) startStream(transcriberHandle, streamHandle int32) int32 {
+	return raw.MoonshineStartStream(transcriberHandle, streamHandle)
+}
+
+func (rawTranscriberBindings) stopStream(transcriberHandle, streamHandle int32) int32 {
+	return raw.MoonshineStopStream(transcriberHandle, streamHandle)
+}
+
+func (rawTranscriberBindings) freeStream(transcriberHandle, streamHandle int32) int32 {
+	return raw.MoonshineFreeStream(transcriberHandle, streamHandle)
+}
+
 func (rawTranscriberBindings) errorToString(code int32) string {
 	return copyCString(raw.MoonshineErrorToString(code))
 }
@@ -125,6 +145,7 @@ type Transcriber struct {
 	pinner    *runtime.Pinner
 	mu        sync.RWMutex
 	closed    bool
+	streams   map[int32]struct{}
 	closeOnce sync.Once
 }
 
@@ -161,6 +182,7 @@ func newTranscriber(bindings transcriberBindings, modelPath string, modelArch Mo
 	transcriber := &Transcriber{
 		bindings: bindings,
 		handle:   handle,
+		streams:  make(map[int32]struct{}),
 	}
 	runtime.SetFinalizer(transcriber, (*Transcriber).finalize)
 	return transcriber, nil
@@ -219,6 +241,7 @@ func newTranscriberFromMemory(
 		handle:   handle,
 		memory:   memory,
 		pinner:   pinner,
+		streams:  make(map[int32]struct{}),
 	}
 	runtime.SetFinalizer(transcriber, (*Transcriber).finalize)
 	return transcriber, nil
@@ -237,6 +260,10 @@ func (t *Transcriber) Close() error {
 
 		runtime.SetFinalizer(t, nil)
 		t.closed = true
+		for streamHandle := range t.streams {
+			_ = t.bindings.freeStream(t.handle, streamHandle)
+		}
+		t.streams = nil
 		t.bindings.freeTranscriber(t.handle)
 		if t.pinner != nil {
 			t.pinner.Unpin()

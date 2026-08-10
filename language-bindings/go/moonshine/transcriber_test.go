@@ -28,6 +28,33 @@ type fakeTranscriberBindings struct {
 	transcribeFlags []uint32
 	freed           []int32
 	freedHandle     chan int32
+	streamHandle    int32
+	streamCode      int32
+	streamCalls     []string
+	streamFlags     []uint32
+	freedStreams    [][2]int32
+}
+
+func (f *fakeTranscriberBindings) createStream(_ int32, flags uint32) int32 {
+	f.streamCalls = append(f.streamCalls, "create")
+	f.streamFlags = append(f.streamFlags, flags)
+	return f.streamHandle
+}
+
+func (f *fakeTranscriberBindings) startStream(_, _ int32) int32 {
+	f.streamCalls = append(f.streamCalls, "start")
+	return f.streamCode
+}
+
+func (f *fakeTranscriberBindings) stopStream(_, _ int32) int32 {
+	f.streamCalls = append(f.streamCalls, "stop")
+	return f.streamCode
+}
+
+func (f *fakeTranscriberBindings) freeStream(transcriberHandle, streamHandle int32) int32 {
+	f.streamCalls = append(f.streamCalls, "free")
+	f.freedStreams = append(f.freedStreams, [2]int32{transcriberHandle, streamHandle})
+	return f.streamCode
 }
 
 func (f *fakeTranscriberBindings) transcribeWithoutStreaming(
