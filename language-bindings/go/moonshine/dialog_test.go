@@ -214,3 +214,41 @@ func TestAgentFlowAlwaysReportsHandlerErrors(t *testing.T) {
 	require.ErrorIs(t, err, want)
 	require.ErrorIs(t, seen, want)
 }
+
+func TestAgentFlowListsAndUnregistersDialogFlows(t *testing.T) {
+	agent, err := NewAgentFlow(AgentFlowResources{}, AgentFlowConfig{})
+	require.NoError(t, err)
+	flow := func(*Dialog) error { return nil }
+	require.NoError(t, agent.ListenFor("first", flow))
+	require.NoError(t, agent.ListenFor("second", flow))
+	require.NoError(t, agent.ListenFor("first", flow))
+	assert.Equal(t, []string{"first", "second"}, agent.RegisteredFlows())
+
+	assert.True(t, agent.UnregisterFlow("first"))
+	assert.False(t, agent.UnregisterFlow("first"))
+	assert.Equal(t, []string{"second"}, agent.RegisteredFlows())
+	claimed, err := agent.HandleUtterance(context.Background(), "first")
+	require.NoError(t, err)
+	assert.False(t, claimed)
+}
+
+func TestDialogAskTimesOutRepromptsAndStops(t *testing.T) {
+	agent, err := NewAgentFlow(AgentFlowResources{}, AgentFlowConfig{})
+	require.NoError(t, err)
+	seen := make(chan error, 1)
+	agent.OnError(func(err error) { seen <- err })
+	require.NoError(t, agent.ListenFor("begin", func(dialog *Dialog) error {
+		_, err := dialog.Ask("Name?", AskOptions{Timeout: time.Millisecond, MaxRetries: 1})
+		return err
+	}))
+
+	_, err = agent.HandleUtterance(context.Background(), "begin")
+	require.NoError(t, err)
+	select {
+	case err := <-seen:
+		require.ErrorIs(t, err, ErrDialogNoMatch)
+	case <-time.After(time.Second):
+		t.Fatal("dialog did not report timeout")
+	}
+	assert.False(t, agent.IsActive())
+}

@@ -86,6 +86,7 @@ type AgentFlow struct {
 	closeErr       error
 	matcherMu      sync.Mutex
 	dialogFlows    map[string]DialogFlow
+	dialogOrder    []string
 	activeDialog   *dialogSession
 	globalHandlers map[string]AgentHandler
 	globalOrder    []string

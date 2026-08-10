@@ -68,11 +68,53 @@ func (a *AgentFlow) ListenFor(trigger string, flow DialogFlow) error {
 		a.mu.Unlock()
 		return ErrClosed
 	}
+	if _, found := a.dialogFlows[trigger]; !found {
+		a.dialogOrder = append(a.dialogOrder, trigger)
+	}
 	a.dialogFlows[trigger] = flow
-	a.mu.Unlock()
-	return a.Register("dialog:"+trigger, []string{trigger}, func(ctx context.Context, _ string) error {
+	key := "dialog:" + trigger
+	a.phrases[key] = []string{trigger}
+	a.handlers[key] = func(ctx context.Context, _ string) error {
 		return a.startDialog(ctx, trigger, flow)
-	})
+	}
+	a.generation++
+	a.mu.Unlock()
+	return nil
+}
+
+// UnregisterFlow removes a conversational trigger.
+func (a *AgentFlow) UnregisterFlow(trigger string) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	if _, found := a.dialogFlows[trigger]; !found {
+		a.mu.Unlock()
+		return false
+	}
+	delete(a.dialogFlows, trigger)
+	for index, candidate := range a.dialogOrder {
+		if candidate == trigger {
+			a.dialogOrder = append(a.dialogOrder[:index], a.dialogOrder[index+1:]...)
+			break
+		}
+	}
+	key := "dialog:" + trigger
+	delete(a.phrases, key)
+	delete(a.handlers, key)
+	a.generation++
+	a.mu.Unlock()
+	return true
+}
+
+// RegisteredFlows returns conversational triggers in registration order.
+func (a *AgentFlow) RegisteredFlows() []string {
+	if a == nil {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return append([]string(nil), a.dialogOrder...)
 }
 
 // Always registers a handler which can claim its phrase both inside and
