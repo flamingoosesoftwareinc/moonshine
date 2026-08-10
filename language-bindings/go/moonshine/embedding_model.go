@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/moonshine-ai/moonshine/language-bindings/go/raw"
 )
@@ -28,6 +29,9 @@ type embeddingBindings interface {
 		options []Option,
 	) int32
 	freeEmbeddingModel(handle int32)
+	calculateEmbedding(handle int32, sentence, modelName string) (*float32, uint64, int32)
+	freeEmbedding(pointer *float32)
+	calculateEmbeddingDistance(handle int32, a, b []float32) (float32, int32)
 	errorToString(code int32) string
 }
 
@@ -61,6 +65,31 @@ func (rawEmbeddingBindings) createEmbeddingModelFromMemory(
 
 func (rawEmbeddingBindings) freeEmbeddingModel(handle int32) {
 	raw.MoonshineFreeEmbeddingModel(handle)
+}
+
+func (rawEmbeddingBindings) calculateEmbedding(
+	handle int32,
+	sentence, modelName string,
+) (*float32, uint64, int32) {
+	output := [][]float32{nil}
+	size := []uint64{0}
+	code := raw.MoonshineCalculateEmbedding(handle, sentence, output, size, modelName)
+	return unsafe.SliceData(output[0]), size[0], code
+}
+
+func (rawEmbeddingBindings) freeEmbedding(pointer *float32) {
+	if pointer != nil {
+		raw.MoonshineFreeEmbedding(unsafe.Slice(pointer, 1))
+	}
+}
+
+func (rawEmbeddingBindings) calculateEmbeddingDistance(
+	handle int32,
+	a, b []float32,
+) (float32, int32) {
+	output := []float32{0}
+	code := raw.MoonshineCalculateEmbeddingDistance(handle, a, b, uint64(len(a)), output)
+	return output[0], code
 }
 
 func (rawEmbeddingBindings) errorToString(code int32) string {
@@ -172,6 +201,66 @@ func (m *EmbeddingModel) Close() error {
 		m.bindings.freeEmbeddingModel(m.handle)
 	})
 	return nil
+}
+
+// Embed calculates a Go-owned embedding vector for text. modelName is reserved
+// by the native API for model selection; pass an empty string for the loaded
+// model.
+func (m *EmbeddingModel) Embed(text, modelName string) ([]float32, error) {
+	if m == nil {
+		return nil, ErrClosed
+	}
+	if strings.IndexByte(text, 0) >= 0 || strings.IndexByte(modelName, 0) >= 0 {
+		return nil, fmt.Errorf("embedding text or model name contains a NUL: %w", ErrInvalidArgument)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return nil, ErrClosed
+	}
+	pointer, size, code := m.bindings.calculateEmbedding(m.handle, text, modelName)
+	if pointer != nil {
+		defer m.bindings.freeEmbedding(pointer)
+	}
+	runtime.KeepAlive(m)
+	if code < 0 {
+		return nil, fmt.Errorf(
+			"moonshine: calculate embedding: %w",
+			nativeError(code, m.bindings.errorToString(code)),
+		)
+	}
+	if size > uint64(^uint(0)>>1) {
+		return nil, fmt.Errorf("embedding length %d exceeds addressable memory: %w", size, ErrInvalidNativeOutput)
+	}
+	if size > 0 && pointer == nil {
+		return nil, fmt.Errorf("native embedding returned %d elements with a nil buffer: %w", size, ErrInvalidNativeOutput)
+	}
+	return append([]float32(nil), unsafe.Slice(pointer, int(size))...), nil
+}
+
+// Similarity calculates cosine similarity between equal-length, non-empty
+// embedding vectors.
+func (m *EmbeddingModel) Similarity(a, b []float32) (float32, error) {
+	if m == nil {
+		return 0, ErrClosed
+	}
+	if len(a) == 0 || len(a) != len(b) {
+		return 0, fmt.Errorf("embedding dimensions %d and %d are incompatible: %w", len(a), len(b), ErrInvalidArgument)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return 0, ErrClosed
+	}
+	similarity, code := m.bindings.calculateEmbeddingDistance(m.handle, a, b)
+	runtime.KeepAlive(m)
+	if code < 0 {
+		return 0, fmt.Errorf(
+			"moonshine: calculate embedding similarity: %w",
+			nativeError(code, m.bindings.errorToString(code)),
+		)
+	}
+	return similarity, nil
 }
 
 func (m *EmbeddingModel) finalize() { _ = m.Close() }

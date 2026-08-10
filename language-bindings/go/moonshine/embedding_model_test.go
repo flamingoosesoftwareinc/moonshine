@@ -8,16 +8,56 @@ import (
 )
 
 type fakeEmbeddingBindings struct {
-	handle       int32
-	errorMessage string
-	paths        []string
-	arches       []uint32
-	variants     []string
-	filenames    [][]string
-	memory       [][][]byte
-	sizes        [][]uint64
-	options      [][]Option
-	freed        []int32
+	handle          int32
+	errorMessage    string
+	paths           []string
+	arches          []uint32
+	variants        []string
+	filenames       [][]string
+	memory          [][][]byte
+	sizes           [][]uint64
+	options         [][]Option
+	freed           []int32
+	embedding       []float32
+	embeddingSize   uint64
+	embeddingCode   int32
+	embeddingTexts  []string
+	embeddingNames  []string
+	freedEmbeddings []*float32
+	similarity      float32
+	similarityCode  int32
+	similarityA     [][]float32
+	similarityB     [][]float32
+}
+
+func (f *fakeEmbeddingBindings) calculateEmbedding(
+	_ int32,
+	text, modelName string,
+) (*float32, uint64, int32) {
+	f.embeddingTexts = append(f.embeddingTexts, text)
+	f.embeddingNames = append(f.embeddingNames, modelName)
+	var pointer *float32
+	if len(f.embedding) > 0 {
+		pointer = &f.embedding[0]
+	}
+	size := f.embeddingSize
+	if size == 0 && pointer != nil {
+		size = uint64(len(f.embedding))
+	}
+	return pointer, size, f.embeddingCode
+}
+
+func (f *fakeEmbeddingBindings) freeEmbedding(pointer *float32) {
+	f.freedEmbeddings = append(f.freedEmbeddings, pointer)
+}
+
+func (f *fakeEmbeddingBindings) calculateEmbeddingDistance(
+	_ int32,
+	a, b []float32,
+) (float32, int32) {
+	f.similarityA = append(f.similarityA, append([]float32(nil), a...))
+	f.similarityB = append(f.similarityB, append([]float32(nil), b...))
+	return f.similarity, f.similarityCode
 }
 
 func (f *fakeEmbeddingBindings) createEmbeddingModel(path string, arch uint32, variant string) int32 {
@@ -133,4 +173,90 @@ func TestEmbeddingConstructorsRejectInvalidInputBeforeNativeCall(t *testing.T) {
 func TestNilEmbeddingModelClose(t *testing.T) {
 	var model *EmbeddingModel
 	require.NoError(t, model.Close())
+}
+
+func TestEmbeddingModelEmbedCopiesAndFreesNativeVector(t *testing.T) {
+	bindings := &fakeEmbeddingBindings{handle: 42, embedding: []float32{0.25, -0.5}}
+	model, err := newEmbeddingModel(bindings, "/models/embedding", EmbeddingModelArchGemma300M, "q4")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, model.Close()) })
+
+	got, err := model.Embed("hello", "embeddinggemma-300m")
+
+	require.NoError(t, err)
+	assert.Equal(t, []float32{0.25, -0.5}, got)
+	assert.Equal(t, []string{"hello"}, bindings.embeddingTexts)
+	assert.Equal(t, []string{"embeddinggemma-300m"}, bindings.embeddingNames)
+	assert.Equal(t, []*float32{&bindings.embedding[0]}, bindings.freedEmbeddings)
+	bindings.embedding[0] = 99
+	assert.Equal(t, float32(0.25), got[0])
+}
+
+func TestEmbeddingModelEmbedFreesUnexpectedOutputOnNativeError(t *testing.T) {
+	bindings := &fakeEmbeddingBindings{
+		handle:        42,
+		embedding:     []float32{1},
+		embeddingCode: rawErrorInvalidArgument,
+	}
+	model, err := newEmbeddingModel(bindings, "/models/embedding", EmbeddingModelArchGemma300M, "q4")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, model.Close()) })
+
+	_, err = model.Embed("hello", "")
+
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Equal(t, []*float32{&bindings.embedding[0]}, bindings.freedEmbeddings)
+}
+
+func TestEmbeddingModelEmbedRejectsInvalidNativeOutput(t *testing.T) {
+	bindings := &fakeEmbeddingBindings{handle: 42, embeddingSize: 2}
+	model, err := newEmbeddingModel(bindings, "/models/embedding", EmbeddingModelArchGemma300M, "q4")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, model.Close()) })
+
+	_, err = model.Embed("hello", "")
+
+	require.ErrorIs(t, err, ErrInvalidNativeOutput)
+}
+
+func TestEmbeddingModelSimilarityForwardsVectors(t *testing.T) {
+	bindings := &fakeEmbeddingBindings{handle: 42, similarity: 0.75}
+	model, err := newEmbeddingModel(bindings, "/models/embedding", EmbeddingModelArchGemma300M, "q4")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, model.Close()) })
+
+	got, err := model.Similarity([]float32{1, 2}, []float32{3, 4})
+
+	require.NoError(t, err)
+	assert.Equal(t, float32(0.75), got)
+	assert.Equal(t, [][]float32{{1, 2}}, bindings.similarityA)
+	assert.Equal(t, [][]float32{{3, 4}}, bindings.similarityB)
+}
+
+func TestEmbeddingModelSimilarityValidatesDimensions(t *testing.T) {
+	bindings := &fakeEmbeddingBindings{handle: 42}
+	model, err := newEmbeddingModel(bindings, "/models/embedding", EmbeddingModelArchGemma300M, "q4")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, model.Close()) })
+
+	for _, vectors := range []struct{ a, b []float32 }{
+		{},
+		{a: []float32{1}, b: []float32{1, 2}},
+	} {
+		_, err := model.Similarity(vectors.a, vectors.b)
+		require.ErrorIs(t, err, ErrInvalidArgument)
+	}
+	assert.Empty(t, bindings.similarityA)
+}
+
+func TestEmbeddingModelOperationsAfterClose(t *testing.T) {
+	bindings := &fakeEmbeddingBindings{handle: 42}
+	model, err := newEmbeddingModel(bindings, "/models/embedding", EmbeddingModelArchGemma300M, "q4")
+	require.NoError(t, err)
+	require.NoError(t, model.Close())
+
+	_, err = model.Embed("hello", "")
+	require.ErrorIs(t, err, ErrClosed)
+	_, err = model.Similarity([]float32{1}, []float32{1})
+	require.ErrorIs(t, err, ErrClosed)
 }
