@@ -153,3 +153,64 @@ func TestAgentFlowStopCancelsDialogWaitingOnInput(t *testing.T) {
 
 	assert.False(t, agent.IsActive())
 }
+
+func TestDialogBuiltInsDoNotClaimSpeechOutsideAFlow(t *testing.T) {
+	agent, err := NewAgentFlow(AgentFlowResources{}, AgentFlowConfig{})
+	require.NoError(t, err)
+	var leftovers []string
+	agent.Otherwise(func(_ context.Context, utterance string) error {
+		leftovers = append(leftovers, utterance)
+		return nil
+	})
+
+	for _, utterance := range []string{"cancel", "start over", "cancel my subscription tomorrow"} {
+		claimed, err := agent.HandleUtterance(context.Background(), utterance)
+		require.NoError(t, err)
+		assert.False(t, claimed)
+	}
+
+	assert.Equal(t, []string{"cancel", "start over", "cancel my subscription tomorrow"}, leftovers)
+}
+
+func TestAgentFlowAlwaysClaimsBuiltInPhraseEverywhere(t *testing.T) {
+	agent, err := NewAgentFlow(AgentFlowResources{}, AgentFlowConfig{})
+	require.NoError(t, err)
+	var calls []string
+	require.NoError(t, agent.Always("cancel", func(_ context.Context, utterance string) error {
+		calls = append(calls, utterance)
+		return nil
+	}))
+
+	claimed, err := agent.HandleUtterance(context.Background(), "cancel")
+	require.NoError(t, err)
+	assert.True(t, claimed)
+	require.NoError(t, agent.ListenFor("begin", func(dialog *Dialog) error {
+		_, err := dialog.Ask("Name?", AskOptions{})
+		return err
+	}))
+	_, err = agent.HandleUtterance(context.Background(), "begin")
+	require.NoError(t, err)
+	claimed, err = agent.HandleUtterance(context.Background(), "cancel")
+	require.NoError(t, err)
+	assert.True(t, claimed)
+	assert.True(t, agent.IsActive())
+	assert.Equal(t, []string{"cancel", "cancel"}, calls)
+	assert.True(t, agent.UnregisterAlways("cancel"))
+	assert.False(t, agent.UnregisterAlways("cancel"))
+	assert.True(t, agent.Cancel())
+}
+
+func TestAgentFlowAlwaysReportsHandlerErrors(t *testing.T) {
+	want := errors.New("global failed")
+	agent, err := NewAgentFlow(AgentFlowResources{}, AgentFlowConfig{})
+	require.NoError(t, err)
+	var seen error
+	agent.OnError(func(err error) { seen = err })
+	require.NoError(t, agent.Always("break", func(context.Context, string) error { return want }))
+
+	claimed, err := agent.HandleUtterance(context.Background(), "break")
+
+	assert.True(t, claimed)
+	require.ErrorIs(t, err, want)
+	require.ErrorIs(t, seen, want)
+}

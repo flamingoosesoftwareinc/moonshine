@@ -87,6 +87,8 @@ type AgentFlow struct {
 	matcherMu      sync.Mutex
 	dialogFlows    map[string]DialogFlow
 	activeDialog   *dialogSession
+	globalHandlers map[string]AgentHandler
+	globalOrder    []string
 }
 
 func NewAgentFlow(resources AgentFlowResources, config AgentFlowConfig) (*AgentFlow, error) {
@@ -100,15 +102,16 @@ func NewAgentFlow(resources AgentFlowResources, config AgentFlowConfig) (*AgentF
 		return nil, fmt.Errorf("AgentFlow embeddings are required: %w", ErrInvalidArgument)
 	}
 	return &AgentFlow{
-		resources:     resources,
-		config:        config,
-		phrases:       make(map[string][]string),
-		handlers:      make(map[string]AgentHandler),
-		heardHandlers: make(map[uint64]func(string)),
-		saidHandlers:  make(map[uint64]func(string)),
-		errorHandlers: make(map[uint64]func(error)),
-		dialogFlows:   make(map[string]DialogFlow),
-		closeDone:     make(chan struct{}),
+		resources:      resources,
+		config:         config,
+		phrases:        make(map[string][]string),
+		handlers:       make(map[string]AgentHandler),
+		heardHandlers:  make(map[uint64]func(string)),
+		saidHandlers:   make(map[uint64]func(string)),
+		errorHandlers:  make(map[uint64]func(error)),
+		dialogFlows:    make(map[string]DialogFlow),
+		globalHandlers: make(map[string]AgentHandler),
+		closeDone:      make(chan struct{}),
 	}, nil
 }
 
@@ -200,6 +203,9 @@ func (a *AgentFlow) HandleUtterance(ctx context.Context, utterance string) (bool
 		return false, fmt.Errorf("nil AgentFlow context: %w", ErrInvalidArgument)
 	}
 	a.emitHeard(utterance)
+	if claimed, err := a.handleGlobal(ctx, utterance); claimed || err != nil {
+		return claimed, err
+	}
 	if claimed, err := a.deliverDialogUtterance(ctx, utterance); claimed || err != nil {
 		return claimed, err
 	}

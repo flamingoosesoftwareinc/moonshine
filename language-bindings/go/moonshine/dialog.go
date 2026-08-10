@@ -75,6 +75,68 @@ func (a *AgentFlow) ListenFor(trigger string, flow DialogFlow) error {
 	})
 }
 
+// Always registers a handler which can claim its phrase both inside and
+// outside a conversational flow. Registering "cancel" or "start over"
+// overrides that built-in while the registration exists.
+func (a *AgentFlow) Always(phrase string, handler AgentHandler) error {
+	if a == nil {
+		return ErrClosed
+	}
+	if strings.TrimSpace(phrase) == "" || handler == nil {
+		return fmt.Errorf("invalid global dialog handler: %w", ErrInvalidArgument)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed || a.closing {
+		return ErrClosed
+	}
+	if _, found := a.globalHandlers[phrase]; !found {
+		a.globalOrder = append(a.globalOrder, phrase)
+	}
+	a.globalHandlers[phrase] = handler
+	return nil
+}
+
+// UnregisterAlways removes a global phrase handler.
+func (a *AgentFlow) UnregisterAlways(phrase string) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, found := a.globalHandlers[phrase]; !found {
+		return false
+	}
+	delete(a.globalHandlers, phrase)
+	for index, candidate := range a.globalOrder {
+		if candidate == phrase {
+			a.globalOrder = append(a.globalOrder[:index], a.globalOrder[index+1:]...)
+			break
+		}
+	}
+	return true
+}
+
+func (a *AgentFlow) handleGlobal(ctx context.Context, utterance string) (bool, error) {
+	a.mu.RLock()
+	var handler AgentHandler
+	for _, phrase := range a.globalOrder {
+		if matchesAny(utterance, []string{phrase}) {
+			handler = a.globalHandlers[phrase]
+			break
+		}
+	}
+	a.mu.RUnlock()
+	if handler == nil {
+		return false, nil
+	}
+	if err := handler(ctx, utterance); err != nil {
+		a.emitError(err)
+		return true, err
+	}
+	return true, nil
+}
+
 func (a *AgentFlow) startDialog(ctx context.Context, trigger string, flow DialogFlow) error {
 	sessionCtx, cancel := context.WithCancelCause(ctx)
 	session := &dialogSession{
