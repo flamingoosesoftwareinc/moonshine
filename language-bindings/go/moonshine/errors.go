@@ -24,6 +24,12 @@ var (
 	ErrAssetDownload = errors.New("moonshine: asset download failed")
 	// ErrAssetIntegrity indicates that downloaded bytes failed declared checks.
 	ErrAssetIntegrity = errors.New("moonshine: asset integrity check failed")
+	// ErrDialogCancelled indicates that the active conversational flow was abandoned.
+	ErrDialogCancelled = errors.New("moonshine: dialog cancelled")
+	// ErrDialogRestart indicates that the active conversational flow requested a restart.
+	ErrDialogRestart = errors.New("moonshine: dialog restart")
+	// ErrDialogNoMatch indicates that a prompt exhausted its retries.
+	ErrDialogNoMatch = errors.New("moonshine: no matching dialog answer")
 )
 
 func nativeError(code int32, message string) error {

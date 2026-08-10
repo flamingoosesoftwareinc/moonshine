@@ -85,6 +85,8 @@ type AgentFlow struct {
 	closeDone      chan struct{}
 	closeErr       error
 	matcherMu      sync.Mutex
+	dialogFlows    map[string]DialogFlow
+	activeDialog   *dialogSession
 }
 
 func NewAgentFlow(resources AgentFlowResources, config AgentFlowConfig) (*AgentFlow, error) {
@@ -105,6 +107,7 @@ func NewAgentFlow(resources AgentFlowResources, config AgentFlowConfig) (*AgentF
 		heardHandlers: make(map[uint64]func(string)),
 		saidHandlers:  make(map[uint64]func(string)),
 		errorHandlers: make(map[uint64]func(error)),
+		dialogFlows:   make(map[string]DialogFlow),
 		closeDone:     make(chan struct{}),
 	}, nil
 }
@@ -197,6 +200,9 @@ func (a *AgentFlow) HandleUtterance(ctx context.Context, utterance string) (bool
 		return false, fmt.Errorf("nil AgentFlow context: %w", ErrInvalidArgument)
 	}
 	a.emitHeard(utterance)
+	if claimed, err := a.deliverDialogUtterance(ctx, utterance); claimed || err != nil {
+		return claimed, err
+	}
 	matcher, err := a.matcherForCurrentGeneration()
 	if err != nil {
 		a.emitError(err)
@@ -344,12 +350,12 @@ func (a *AgentFlow) stopRun(run *agentRun) error {
 		run.accepting = false
 		run.stopping = true
 		run.mu.Unlock()
+		run.cancel()
 		select {
 		case run.wake <- struct{}{}:
 		default:
 		}
 		<-run.done
-		run.cancel()
 		a.mu.Lock()
 		if a.run == run {
 			a.run = nil
@@ -462,6 +468,7 @@ func (a *AgentFlow) Close() error {
 	}
 	a.closing = true
 	a.mu.Unlock()
+	a.Cancel()
 	err := a.Stop()
 	if a.config.OwnInput && a.resources.Input != nil {
 		err = errors.Join(err, a.resources.Input.Close())
