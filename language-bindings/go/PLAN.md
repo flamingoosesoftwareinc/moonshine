@@ -479,12 +479,13 @@ Tests:
 Public API:
 
 ```go
-func G2PDependencies(languages []string, options ...Option) (DownloadManifest, error)
+func G2PDependencies(languages []string, options ...Option) ([]string, error)
 ```
 
 Native symbols: `moonshine_get_g2p_dependencies`, `moonshine_free_buffer`.
 
-Tests cover language joining, generic options, JSON decoding, ownership, known
+The native API returns canonical asset keys as comma-separated text rather than
+a JSON download manifest. Tests cover language joining, generic options, parsing, ownership, known
 languages, and invalid language errors.
 
 ### 20. Text-to-speech lifecycle

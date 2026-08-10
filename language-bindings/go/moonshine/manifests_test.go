@@ -9,6 +9,7 @@ import (
 
 type fakeManifestBindings struct {
 	sttCode              int32
+	g2pCode              int32
 	diarCode             int32
 	catalogCode          int32
 	embeddingCode        int32
@@ -18,6 +19,15 @@ type fakeManifestBindings struct {
 	languages            []string
 	options              [][]Option
 	freed                []*byte
+}
+
+func (f *fakeManifestBindings) g2pDependencies(
+	languages string, options []Option, output **byte,
+) int32 {
+	f.languages = append(f.languages, languages)
+	f.options = append(f.options, append([]Option(nil), options...))
+	f.setOutput(output)
+	return f.g2pCode
 }
 
 func (f *fakeManifestBindings) setOutput(output **byte) {
@@ -62,6 +72,64 @@ func (f *fakeManifestBindings) freeBuffer(pointer *byte) {
 func (f *fakeManifestBindings) errorToString(int32) string { return f.errorMessage }
 
 func manifestJSON(value string) []byte { return append([]byte(value), 0) }
+
+func TestG2PDependenciesSplitsKeysAndFreesNativeOutput(t *testing.T) {
+	bindings := &fakeManifestBindings{output: manifestJSON("en_us/g2p-config.json,en_us/oov/model.ort")}
+	options := []Option{{Name: "g2p_root", Value: "/models/tts"}}
+
+	keys, err := g2pDependencies(bindings, []string{"en_us", "es_mx"}, options...)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"en_us/g2p-config.json", "en_us/oov/model.ort"}, keys)
+	assert.Equal(t, []string{"en_us,es_mx"}, bindings.languages)
+	assert.Equal(t, [][]Option{options}, bindings.options)
+	assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+}
+
+func TestG2PDependenciesAllowsAllLanguagesAndEmptyResult(t *testing.T) {
+	bindings := &fakeManifestBindings{output: manifestJSON("")}
+
+	keys, err := g2pDependencies(bindings, nil)
+
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+	assert.Equal(t, []string{""}, bindings.languages)
+	assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+}
+
+func TestG2PDependenciesMapsNativeErrorAndFreesUnexpectedOutput(t *testing.T) {
+	bindings := &fakeManifestBindings{
+		g2pCode: rawErrorInvalidArgument, errorMessage: "Invalid argument",
+		output: manifestJSON("unexpected"),
+	}
+
+	_, err := g2pDependencies(bindings, []string{"unknown"})
+
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+}
+
+func TestG2PDependenciesRejectsInvalidInputAndOutput(t *testing.T) {
+	for _, languages := range [][]string{{""}, {"en\x00us"}, {"en_us,es_mx"}} {
+		bindings := &fakeManifestBindings{}
+		_, err := g2pDependencies(bindings, languages)
+		require.ErrorIs(t, err, ErrInvalidArgument)
+		assert.Empty(t, bindings.languages)
+	}
+	bindings := &fakeManifestBindings{}
+	_, err := g2pDependencies(bindings, []string{"en_us"}, Option{Name: ""})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Empty(t, bindings.languages)
+
+	bindings = &fakeManifestBindings{}
+	_, err = g2pDependencies(bindings, []string{"en_us"})
+	require.ErrorIs(t, err, ErrInvalidNativeOutput)
+
+	bindings = &fakeManifestBindings{output: manifestJSON("one,,two")}
+	_, err = g2pDependencies(bindings, []string{"en_us"})
+	require.ErrorIs(t, err, ErrInvalidNativeOutput)
+	assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+}
 
 func TestSTTDependenciesDecodesAndFreesNativeManifest(t *testing.T) {
 	bindings := &fakeManifestBindings{output: manifestJSON(`{
