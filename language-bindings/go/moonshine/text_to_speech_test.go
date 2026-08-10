@@ -30,6 +30,7 @@ type fakeTextToSpeechBindings struct {
 	phonemeCode       int32
 	phonemeErr        error
 	clip              SpeechClip
+	clips             []SpeechClip
 	clipCode          int32
 	clipErr           error
 	clipAudio         [][]float32
@@ -57,6 +58,10 @@ func (f *fakeTextToSpeechBindings) extractSpeechClip(
 	f.clipAudio = append(f.clipAudio, append([]float32(nil), audio...))
 	f.clipSampleRates = append(f.clipSampleRates, sampleRate)
 	f.clipOptions = append(f.clipOptions, append([]Option(nil), options...))
+	if len(f.clips) > 0 {
+		index := min(len(f.clipAudio)-1, len(f.clips)-1)
+		return f.clips[index], f.clipCode, f.clipErr
+	}
 	return f.clip, f.clipCode, f.clipErr
 }
 
