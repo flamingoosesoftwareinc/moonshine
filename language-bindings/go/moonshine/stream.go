@@ -10,13 +10,16 @@ import (
 // parent Transcriber, which must outlive the native stream. Closing the parent
 // closes every remaining stream before releasing the transcriber.
 type Stream struct {
-	transcriber *Transcriber
-	handle      int32
-	mu          sync.Mutex
-	closed      bool
-	active      bool
-	closeOnce   sync.Once
-	closeErr    error
+	transcriber  *Transcriber
+	handle       int32
+	mu           sync.Mutex
+	closed       bool
+	active       bool
+	closeOnce    sync.Once
+	closeErr     error
+	listenerMu   sync.Mutex
+	listeners    map[uint64]func(TranscriptEvent)
+	nextListener uint64
 }
 
 // NewStream creates an independent streaming session on the transcriber.
@@ -38,7 +41,11 @@ func (t *Transcriber) NewStream(flags ...TranscribeFlags) (*Stream, error) {
 			nativeError(handle, t.bindings.errorToString(handle)),
 		)
 	}
-	stream := &Stream{transcriber: t, handle: handle}
+	stream := &Stream{
+		transcriber: t,
+		handle:      handle,
+		listeners:   make(map[uint64]func(TranscriptEvent)),
+	}
 	t.streams[handle] = struct{}{}
 	runtime.SetFinalizer(stream, (*Stream).finalize)
 	return stream, nil
@@ -131,10 +138,10 @@ func (s *Stream) Transcript(flags ...TranscribeFlags) (Transcript, error) {
 
 	t := s.transcriber
 	t.mu.RLock()
-	defer t.mu.RUnlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if t.closed || s.closed {
+		s.mu.Unlock()
+		t.mu.RUnlock()
 		return Transcript{}, ErrClosed
 	}
 
@@ -144,6 +151,8 @@ func (s *Stream) Transcript(flags ...TranscribeFlags) (Transcript, error) {
 		combineTranscribeFlags(flags),
 	)
 	runtime.KeepAlive(s)
+	s.mu.Unlock()
+	t.mu.RUnlock()
 	if code < 0 {
 		return Transcript{}, fmt.Errorf(
 			"moonshine: transcribe stream: %w",
@@ -153,7 +162,56 @@ func (s *Stream) Transcript(flags ...TranscribeFlags) (Transcript, error) {
 	if err != nil {
 		return Transcript{}, fmt.Errorf("moonshine: copy stream transcript: %w", err)
 	}
+	s.emit(transcriptEvents(transcript))
 	return transcript, nil
+}
+
+// AddListener subscribes to events derived from successful Transcript calls.
+// Delivery is synchronous and follows transcript line order. The returned
+// function removes only this listener and is safe to call repeatedly.
+func (s *Stream) AddListener(listener func(TranscriptEvent)) (remove func()) {
+	if s == nil || listener == nil {
+		return func() {}
+	}
+	s.listenerMu.Lock()
+	id := s.nextListener
+	s.nextListener++
+	s.listeners[id] = listener
+	s.listenerMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.listenerMu.Lock()
+			delete(s.listeners, id)
+			s.listenerMu.Unlock()
+		})
+	}
+}
+
+// RemoveAllListeners removes every event listener from the stream.
+func (s *Stream) RemoveAllListeners() {
+	if s == nil {
+		return
+	}
+	s.listenerMu.Lock()
+	clear(s.listeners)
+	s.listenerMu.Unlock()
+}
+
+func (s *Stream) emit(events []TranscriptEvent) {
+	s.listenerMu.Lock()
+	listeners := make([]func(TranscriptEvent), 0, len(s.listeners))
+	for _, listener := range s.listeners {
+		listeners = append(listeners, listener)
+	}
+	s.listenerMu.Unlock()
+
+	for _, event := range events {
+		for _, listener := range listeners {
+			listener(event)
+		}
+	}
 }
 
 // Close releases the native stream. It is safe to call Close more than once.
@@ -172,6 +230,7 @@ func (s *Stream) Close() error {
 		runtime.SetFinalizer(s, nil)
 		s.closed = true
 		s.active = false
+		s.RemoveAllListeners()
 		if t.closed {
 			return
 		}

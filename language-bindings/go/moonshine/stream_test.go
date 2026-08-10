@@ -169,3 +169,55 @@ func TestClosedStreamRejectsAudioAndTranscript(t *testing.T) {
 	_, err = stream.Transcript()
 	require.ErrorIs(t, err, ErrClosed)
 }
+
+func TestStreamTranscriptEmitsEventsAndSupportsRemoval(t *testing.T) {
+	line := TranscriptLine{Text: "hello", IsNew: true, IsUpdated: true, IsComplete: true}
+	bindings := &fakeTranscriberBindings{
+		handle:           42,
+		streamHandle:     7,
+		streamTranscript: Transcript{Lines: []TranscriptLine{line}},
+	}
+	transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+	stream, err := transcriber.NewStream()
+	require.NoError(t, err)
+
+	var got []TranscriptEvent
+	remove := stream.AddListener(func(event TranscriptEvent) { got = append(got, event) })
+	_, err = stream.Transcript()
+	require.NoError(t, err)
+	remove()
+	remove()
+	_, err = stream.Transcript()
+	require.NoError(t, err)
+
+	assert.Equal(t, []TranscriptEvent{
+		LineStarted{Line: line},
+		LineCompleted{Line: line},
+	}, got)
+}
+
+func TestStreamListenerCanCallBackIntoStream(t *testing.T) {
+	line := TranscriptLine{Text: "hello", IsNew: true}
+	bindings := &fakeTranscriberBindings{
+		handle:           42,
+		streamHandle:     7,
+		streamTranscript: Transcript{Lines: []TranscriptLine{line}},
+	}
+	transcriber, err := newTranscriber(bindings, "/models/tiny-en", ModelArchTiny)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+	stream, err := transcriber.NewStream()
+	require.NoError(t, err)
+
+	called := false
+	stream.AddListener(func(TranscriptEvent) {
+		called = true
+		stream.RemoveAllListeners()
+	})
+	_, err = stream.Transcript()
+
+	require.NoError(t, err)
+	assert.True(t, called)
+}
