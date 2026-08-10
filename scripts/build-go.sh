@@ -32,8 +32,13 @@ case "${1:-}" in
 		"${SCRIPTS_DIR}/fetch-voice-assets.sh" tts-smoke
 		GO_TEST_ARGS+=("-tags=g2p_integration")
 		;;
+	tts-integration)
+		# Explicit native TTS equivalence and memory-constructor parity test.
+		"${SCRIPTS_DIR}/fetch-voice-assets.sh" tts-smoke
+		GO_TEST_ARGS+=("-tags=tts_integration")
+		;;
 	*)
-		echo "usage: $0 [integration|roundtrip|embedding-integration|g2p-integration]" >&2
+		echo "usage: $0 [integration|roundtrip|embedding-integration|g2p-integration|tts-integration]" >&2
 		exit 2
 		;;
 esac
