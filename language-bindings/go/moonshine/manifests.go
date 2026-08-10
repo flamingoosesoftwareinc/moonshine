@@ -29,9 +29,28 @@ type DownloadFile struct {
 	ChecksumType string  `json:"checksum_type"`
 }
 
+// VoiceState reports whether a catalog voice is present beneath the queried
+// asset root or remains available for download.
+type VoiceState string
+
+const (
+	VoiceStateFound   VoiceState = "found"
+	VoiceStateMissing VoiceState = "missing"
+)
+
+// Voice describes one native TTS voice catalog entry.
+type Voice struct {
+	ID    string     `json:"id"`
+	State VoiceState `json:"state"`
+}
+
+// VoiceCatalog maps native language tags to their available voice entries.
+type VoiceCatalog map[string][]Voice
+
 type manifestBindings interface {
 	g2pDependencies(languages string, options []Option, output **byte) int32
 	ttsDependencies(languages string, options []Option, output **byte) int32
+	ttsVoices(languages string, options []Option, output **byte) int32
 	sttDependencies(language string, options []Option, output **byte) int32
 	diarizationDependencies(output **byte) int32
 	sttCatalog(output **byte) int32
@@ -51,6 +70,11 @@ func (rawManifestBindings) g2pDependencies(languages string, options []Option, o
 func (rawManifestBindings) ttsDependencies(languages string, options []Option, output **byte) int32 {
 	converted := rawOptions(options)
 	return raw.MoonshineGetTtsDependencies(languages, converted, uint64(len(converted)), output)
+}
+
+func (rawManifestBindings) ttsVoices(languages string, options []Option, output **byte) int32 {
+	converted := rawOptions(options)
+	return raw.MoonshineGetTtsVoices(languages, converted, uint64(len(converted)), output)
 }
 
 func (rawManifestBindings) sttDependencies(language string, options []Option, output **byte) int32 {
@@ -137,6 +161,43 @@ func ttsDependencies(
 	return loadManifest(bindings, "get TTS dependencies", func(output **byte) int32 {
 		return bindings.ttsDependencies(joined, options, output)
 	})
+}
+
+// TTSVoices returns the native voice catalog and each voice's state beneath
+// the asset root supplied in options. An empty language slice requests all.
+func TTSVoices(languages []string, options ...Option) (VoiceCatalog, error) {
+	return ttsVoices(rawManifestBindings{}, languages, options...)
+}
+
+func ttsVoices(
+	bindings manifestBindings, languages []string, options ...Option,
+) (VoiceCatalog, error) {
+	joined, err := joinManifestLanguages("TTS", languages, options)
+	if err != nil {
+		return nil, err
+	}
+	var output *byte
+	code := bindings.ttsVoices(joined, options, &output)
+	if output != nil {
+		defer bindings.freeBuffer(output)
+	}
+	if code < 0 {
+		return nil, fmt.Errorf(
+			"moonshine: get TTS voices: %w",
+			nativeError(code, bindings.errorToString(code)),
+		)
+	}
+	if output == nil {
+		return nil, fmt.Errorf("moonshine: get TTS voices returned nil: %w", ErrInvalidNativeOutput)
+	}
+	var catalog VoiceCatalog
+	if err := json.Unmarshal([]byte(copyCString(output)), &catalog); err != nil {
+		return nil, fmt.Errorf("moonshine: decode TTS voices: %w: %w", ErrInvalidNativeOutput, err)
+	}
+	if catalog == nil {
+		return nil, fmt.Errorf("moonshine: decode TTS voices returned null: %w", ErrInvalidNativeOutput)
+	}
+	return catalog, nil
 }
 
 func joinManifestLanguages(kind string, languages []string, options []Option) (string, error) {

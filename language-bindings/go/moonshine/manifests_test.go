@@ -11,6 +11,7 @@ type fakeManifestBindings struct {
 	sttCode              int32
 	g2pCode              int32
 	ttsCode              int32
+	ttsVoicesCode        int32
 	diarCode             int32
 	catalogCode          int32
 	embeddingCode        int32
@@ -38,6 +39,15 @@ func (f *fakeManifestBindings) ttsDependencies(
 	f.options = append(f.options, append([]Option(nil), options...))
 	f.setOutput(output)
 	return f.ttsCode
+}
+
+func (f *fakeManifestBindings) ttsVoices(
+	languages string, options []Option, output **byte,
+) int32 {
+	f.languages = append(f.languages, languages)
+	f.options = append(f.options, append([]Option(nil), options...))
+	f.setOutput(output)
+	return f.ttsVoicesCode
 }
 
 func (f *fakeManifestBindings) setOutput(output **byte) {
@@ -183,6 +193,64 @@ func TestTTSDependenciesMapsErrorsAndRejectsInvalidInput(t *testing.T) {
 	}
 	bindings = &fakeManifestBindings{}
 	_, err = ttsDependencies(bindings, []string{"en_us"}, Option{})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Empty(t, bindings.languages)
+}
+
+func TestTTSVoicesDecodesForwardsAndFreesCatalog(t *testing.T) {
+	bindings := &fakeManifestBindings{output: manifestJSON(`{
+		"en_us":[
+			{"id":"piper_en_US-amy-low","state":"found","future_field":true},
+			{"id":"kokoro_af_heart","state":"missing"}
+		]
+	}`)}
+	options := []Option{{Name: "g2p_root", Value: "/models/tts"}}
+
+	catalog, err := ttsVoices(bindings, []string{"en_us"}, options...)
+
+	require.NoError(t, err)
+	assert.Equal(t, VoiceCatalog{"en_us": {
+		{ID: "piper_en_US-amy-low", State: VoiceStateFound},
+		{ID: "kokoro_af_heart", State: VoiceStateMissing},
+	}}, catalog)
+	assert.Equal(t, []string{"en_us"}, bindings.languages)
+	assert.Equal(t, [][]Option{options}, bindings.options)
+	assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+}
+
+func TestTTSVoicesAllowsAllLanguages(t *testing.T) {
+	bindings := &fakeManifestBindings{output: manifestJSON(`{}`)}
+	catalog, err := ttsVoices(bindings, nil)
+	require.NoError(t, err)
+	assert.Empty(t, catalog)
+	assert.Equal(t, []string{""}, bindings.languages)
+}
+
+func TestTTSVoicesRejectsNativeErrorsAndInvalidOutput(t *testing.T) {
+	bindings := &fakeManifestBindings{
+		ttsVoicesCode: rawErrorInvalidArgument, errorMessage: "Invalid argument",
+		output: manifestJSON(`{}`),
+	}
+	_, err := ttsVoices(bindings, []string{"unknown"})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Equal(t, []*byte{&bindings.output[0]}, bindings.freed)
+
+	for _, output := range [][]byte{nil, manifestJSON(`null`), manifestJSON(`[]`), manifestJSON(`{`)} {
+		bindings = &fakeManifestBindings{output: output}
+		_, err = ttsVoices(bindings, []string{"en_us"})
+		require.ErrorIs(t, err, ErrInvalidNativeOutput)
+	}
+}
+
+func TestTTSVoicesRejectsInvalidInputBeforeNativeCall(t *testing.T) {
+	for _, languages := range [][]string{{""}, {"en\x00us"}, {"en_us,es_mx"}} {
+		bindings := &fakeManifestBindings{}
+		_, err := ttsVoices(bindings, languages)
+		require.ErrorIs(t, err, ErrInvalidArgument)
+		assert.Empty(t, bindings.languages)
+	}
+	bindings := &fakeManifestBindings{}
+	_, err := ttsVoices(bindings, []string{"en_us"}, Option{})
 	require.ErrorIs(t, err, ErrInvalidArgument)
 	assert.Empty(t, bindings.languages)
 }

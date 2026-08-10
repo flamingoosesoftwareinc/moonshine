@@ -18,6 +18,12 @@ func TestNativeTextPhonemeAndMemorySynthesisPaths(t *testing.T) {
 		{Name: "g2p_root", Value: root},
 		{Name: "voice", Value: "piper_en_US-amy-low"},
 	}
+	manifest, err := TTSDependencies([]string{"en_us"}, createOptions...)
+	require.NoError(t, err)
+	assert.NotEmpty(t, manifest.Groups)
+	voices, err := TTSVoices([]string{"en_us"}, createOptions...)
+	require.NoError(t, err)
+	assert.Contains(t, voices["en_us"], Voice{ID: "piper_en_US-amy-low", State: VoiceStateFound})
 	synthesizer, err := NewTextToSpeechFromFiles("en_us", nil, createOptions...)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
