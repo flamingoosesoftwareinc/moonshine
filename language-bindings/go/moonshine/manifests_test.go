@@ -10,6 +10,7 @@ import (
 type fakeManifestBindings struct {
 	sttCode      int32
 	diarCode     int32
+	catalogCode  int32
 	errorMessage string
 	output       []byte
 	languages    []string
@@ -33,6 +34,11 @@ func (f *fakeManifestBindings) sttDependencies(language string, options []Option
 func (f *fakeManifestBindings) diarizationDependencies(output **byte) int32 {
 	f.setOutput(output)
 	return f.diarCode
+}
+
+func (f *fakeManifestBindings) sttCatalog(output **byte) int32 {
+	f.setOutput(output)
+	return f.catalogCode
 }
 
 func (f *fakeManifestBindings) freeBuffer(pointer *byte) {

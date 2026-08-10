@@ -245,6 +245,29 @@ func TestNativeDiarizationDependencies(t *testing.T) {
 	}
 }
 
+func TestNativeSTTCatalog(t *testing.T) {
+	catalog, err := STTCatalog()
+
+	require.NoError(t, err)
+	require.NotEmpty(t, catalog.Languages)
+	var english *STTLanguage
+	for index := range catalog.Languages {
+		language := &catalog.Languages[index]
+		assert.NotEmpty(t, language.Code)
+		assert.NotEmpty(t, language.EnglishName)
+		assert.NotEmpty(t, language.Models)
+		if language.Code == "en" {
+			english = language
+		}
+	}
+	require.NotNil(t, english)
+	require.NotEmpty(t, english.Models)
+	assert.True(t, english.Models[0].IsDefault)
+	for _, model := range english.Models {
+		assert.NotEmpty(t, model.DownloadURL)
+	}
+}
+
 func transcriptText(transcript Transcript) string {
 	var text strings.Builder
 	for _, line := range transcript.Lines {

@@ -32,6 +32,7 @@ type DownloadFile struct {
 type manifestBindings interface {
 	sttDependencies(language string, options []Option, output **byte) int32
 	diarizationDependencies(output **byte) int32
+	sttCatalog(output **byte) int32
 	freeBuffer(pointer *byte)
 	errorToString(code int32) string
 }
@@ -45,6 +46,10 @@ func (rawManifestBindings) sttDependencies(language string, options []Option, ou
 
 func (rawManifestBindings) diarizationDependencies(output **byte) int32 {
 	return raw.MoonshineGetDiarizationDependencies(output)
+}
+
+func (rawManifestBindings) sttCatalog(output **byte) int32 {
+	return raw.MoonshineGetSttCatalog(output)
 }
 
 func (rawManifestBindings) freeBuffer(pointer *byte) {
