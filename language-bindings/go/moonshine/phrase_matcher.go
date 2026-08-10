@@ -107,6 +107,10 @@ func (m *PhraseMatcher) Match(utterance string) (MatchResult, error) {
 	return result, nil
 }
 
+func (m *PhraseMatcher) MatchUtterance(utterance string) (MatchResult, error) {
+	return m.Match(utterance)
+}
+
 // SubstringMatcher is the deterministic no-model fallback used for tests and
 // offline flows. The longest case-insensitive containment match wins.
 type SubstringMatcher struct {
@@ -179,4 +183,8 @@ func (m *SubstringMatcher) Match(utterance string) MatchResult {
 	result.Score = min(1, float32(bestLength)/float32(max(len(text), 1)))
 	result.Found = true
 	return result
+}
+
+func (m *SubstringMatcher) MatchUtterance(utterance string) (MatchResult, error) {
+	return m.Match(utterance), nil
 }
