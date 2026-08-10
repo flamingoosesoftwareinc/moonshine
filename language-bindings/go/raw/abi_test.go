@@ -2,6 +2,7 @@ package raw_test
 
 import (
 	"testing"
+	"unsafe"
 
 	"github.com/moonshine-ai/moonshine/language-bindings/go/raw"
 	"github.com/stretchr/testify/assert"
@@ -50,6 +51,36 @@ var generatedFunctions = []any{
 	raw.MoonshineCreateGraphemeToPhonemizerFromMemory,
 	raw.MoonshineFreeGraphemeToPhonemizer,
 	raw.MoonshineTextToPhonemes,
+}
+
+func TestNativeTranscriptDiagnosticIsCallable(t *testing.T) {
+	pointer := raw.MoonshineTranscriptToString([]raw.TranscriptT{{}})
+	assert.NotNil(t, pointer)
+	assert.NotEmpty(t, copyRawCString(pointer))
+}
+
+func TestDeprecatedMemoryLoaderRejectsCurrentHeaderVersion(t *testing.T) {
+	code := raw.MoonshineLoadTranscriberFromMemory(
+		nil, 0,
+		nil, 0,
+		nil, 0,
+		nil, 0,
+		uint32(raw.MoonshineModelArchTiny),
+		nil, 0,
+		int32(raw.MoonshineHeaderVersion),
+	)
+	assert.Equal(t, int32(raw.MoonshineErrorInvalidArgument), code)
+}
+
+func copyRawCString(pointer *byte) string {
+	if pointer == nil {
+		return ""
+	}
+	length := 0
+	for *(*byte)(unsafe.Add(unsafe.Pointer(pointer), length)) != 0 {
+		length++
+	}
+	return string(unsafe.Slice(pointer, length))
 }
 
 func TestGeneratedFunctionInventory(t *testing.T) {
