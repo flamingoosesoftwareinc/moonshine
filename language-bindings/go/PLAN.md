@@ -701,3 +701,37 @@ The Go binding is complete when:
 - Generation is deterministic and CI fails on stale generated files.
 - Package documentation includes a minimal STT example, streaming example,
   embedding example, G2P example, and TTS example, each with explicit cleanup.
+
+## Completion audit
+
+The final ownership audit maps each C allocation to one safe-package owner.
+Tests inject the returned allocation and assert its release count, including
+native-error and malformed-output paths.
+
+| Native allocation | Safe owner | Release |
+|---|---|---|
+| embedding vector | `EmbeddingModel.Embed` | `moonshine_free_embedding` |
+| phoneme text | `Phonemizer.Phonemes` | `moonshine_free_buffer` |
+| synthesized text/phoneme audio | `TextToSpeech.Synthesize*` | `moonshine_free_buffer` |
+| speech-clip audio and transcript | `TextToSpeech.ExtractSpeechClip` | one `moonshine_free_buffer` call per non-nil buffer |
+| dependency manifests and catalogs | manifest/catalog operation that requested the JSON | `moonshine_free_buffer` |
+
+Transcript pointers are library-owned snapshots rather than caller-owned
+allocations. The raw adapter materializes their count-based slices and the safe
+package copies every string, sample, span, word, and line before returning.
+Native handles are owned by their corresponding `Transcriber`, `Stream`,
+`EmbeddingModel`, `Phonemizer`, or `TextToSpeech` value and released by an
+idempotent `Close` method; parent transcribers close child streams first.
+
+Final audit checks also establish that:
+
+- all 39 C functions are represented in generated ABI coverage tests;
+- every non-deprecated function is exercised, while deprecated loading remains
+  raw-only and has an explicit compatibility test;
+- exported safe-package declarations contain no `unsafe.Pointer`, generated
+  raw struct, or cgo type;
+- native failures are mapped to sentinels and tests use `errors.Is` through
+  Testify's `ErrorIs`, without comparing error strings;
+- conversational parity includes straight-line ask/confirm/choose flows,
+  built-in cancellation/restart, ordered global handlers, flow discovery and
+  removal, retries, timeouts, silent speech callbacks, and joined shutdown.
