@@ -24,12 +24,24 @@ type fakeTextToSpeechBindings struct {
 	synthesizeErr     error
 	texts             []string
 	synthesizeOptions [][]Option
+	phonemes          []string
+	phonemeOptions    [][]Option
+	phonemeCode       int32
+	phonemeErr        error
 }
 
 func (f *fakeTextToSpeechBindings) synthesize(_ int32, text string, options []Option) (Audio, int32, error) {
 	f.texts = append(f.texts, text)
 	f.synthesizeOptions = append(f.synthesizeOptions, append([]Option(nil), options...))
 	return f.audio, f.synthesizeCode, f.synthesizeErr
+}
+
+func (f *fakeTextToSpeechBindings) synthesizePhonemes(
+	_ int32, phonemes string, options []Option,
+) (Audio, int32, error) {
+	f.phonemes = append(f.phonemes, phonemes)
+	f.phonemeOptions = append(f.phonemeOptions, append([]Option(nil), options...))
+	return f.audio, f.phonemeCode, f.phonemeErr
 }
 
 func (f *fakeTextToSpeechBindings) createTTSFromFiles(language string, filenames []string, options []Option) int32 {
@@ -253,5 +265,63 @@ func TestTextToSpeechSynthesizeAfterClose(t *testing.T) {
 
 	_, err = synthesizer.Synthesize("Hello")
 
+	require.ErrorIs(t, err, ErrClosed)
+}
+
+func TestTextToSpeechSynthesizePhonemesReturnsGoOwnedAudio(t *testing.T) {
+	want := Audio{Samples: []float32{0.25, -0.5}, SampleRate: 24000}
+	bindings := &fakeTextToSpeechBindings{handle: 42, audio: want}
+	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
+	options := []Option{{Name: "speed", Value: "1.25"}}
+
+	got, err := synthesizer.SynthesizePhonemes("həˈloʊ", options...)
+
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	assert.Equal(t, []string{"həˈloʊ"}, bindings.phonemes)
+	assert.Equal(t, [][]Option{options}, bindings.phonemeOptions)
+}
+
+func TestTextToSpeechSynthesizePhonemesMapsNativeErrorToSentinel(t *testing.T) {
+	bindings := &fakeTextToSpeechBindings{
+		handle: 42, phonemeCode: rawErrorInvalidHandle, errorMessage: "Invalid handle",
+	}
+	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
+
+	_, err = synthesizer.SynthesizePhonemes("həˈloʊ")
+
+	require.ErrorIs(t, err, ErrInvalidHandle)
+}
+
+func TestTextToSpeechSynthesizePhonemesRejectsInvalidInput(t *testing.T) {
+	bindings := &fakeTextToSpeechBindings{handle: 42}
+	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
+
+	_, err = synthesizer.SynthesizePhonemes("")
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	_, err = synthesizer.SynthesizePhonemes("bad\x00phonemes")
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	_, err = synthesizer.SynthesizePhonemes("həˈloʊ", Option{})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Empty(t, bindings.phonemes)
+}
+
+func TestTextToSpeechSynthesizePhonemesAfterClose(t *testing.T) {
+	bindings := &fakeTextToSpeechBindings{handle: 42}
+	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	require.NoError(t, synthesizer.Close())
+
+	_, err = synthesizer.SynthesizePhonemes("həˈloʊ")
+	require.ErrorIs(t, err, ErrClosed)
+
+	var nilSynthesizer *TextToSpeech
+	_, err = nilSynthesizer.SynthesizePhonemes("həˈloʊ")
 	require.ErrorIs(t, err, ErrClosed)
 }

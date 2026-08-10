@@ -21,6 +21,7 @@ type textToSpeechBindings interface {
 		options []Option,
 	) int32
 	synthesize(handle int32, text string, options []Option) (Audio, int32, error)
+	synthesizePhonemes(handle int32, phonemes string, options []Option) (Audio, int32, error)
 	freeTTS(handle int32)
 	errorToString(code int32) string
 }
@@ -89,6 +90,42 @@ func (rawTextToSpeechBindings) synthesize(handle int32, text string, options []O
 	}
 	if sizes[0] > 0 && pointer == nil {
 		return Audio{}, code, fmt.Errorf("native synthesis returned %d samples with a nil buffer", sizes[0])
+	}
+
+	samples := append([]float32(nil), unsafe.Slice(pointer, int(sizes[0]))...)
+	return Audio{Samples: samples, SampleRate: int(sampleRates[0])}, code, nil
+}
+
+func (rawTextToSpeechBindings) synthesizePhonemes(
+	handle int32,
+	phonemes string,
+	options []Option,
+) (Audio, int32, error) {
+	converted := rawOptions(options)
+	output := [][]float32{nil}
+	sizes := []uint64{0}
+	sampleRates := []int32{0}
+	code := raw.MoonshinePhonemesToSpeech(
+		handle,
+		phonemes,
+		converted,
+		uint64(len(converted)),
+		output,
+		sizes,
+		sampleRates,
+	)
+	pointer := unsafe.SliceData(output[0])
+	if pointer != nil {
+		defer raw.MoonshineFreeBuffer(unsafe.Pointer(pointer))
+	}
+	if code < 0 {
+		return Audio{}, code, nil
+	}
+	if sizes[0] > uint64(^uint(0)>>1) {
+		return Audio{}, code, fmt.Errorf("audio sample count %d exceeds addressable memory", sizes[0])
+	}
+	if sizes[0] > 0 && pointer == nil {
+		return Audio{}, code, fmt.Errorf("native phoneme synthesis returned %d samples with a nil buffer", sizes[0])
 	}
 
 	samples := append([]float32(nil), unsafe.Slice(pointer, int(sizes[0]))...)
@@ -273,6 +310,39 @@ func (t *TextToSpeech) Synthesize(text string, options ...Option) (Audio, error)
 	}
 	if err != nil {
 		return Audio{}, fmt.Errorf("moonshine: copy synthesized audio: %w", err)
+	}
+	return audio, nil
+}
+
+// SynthesizePhonemes converts an IPA string produced by a matching Phonemizer
+// into mono float-PCM audio. The returned samples are owned by Go.
+func (t *TextToSpeech) SynthesizePhonemes(phonemes string, options ...Option) (Audio, error) {
+	if t == nil {
+		return Audio{}, ErrClosed
+	}
+	if phonemes == "" || strings.IndexByte(phonemes, 0) >= 0 {
+		return Audio{}, fmt.Errorf("invalid TTS phonemes: %w", ErrInvalidArgument)
+	}
+	if err := validateOptions(options); err != nil {
+		return Audio{}, err
+	}
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.closed {
+		return Audio{}, ErrClosed
+	}
+
+	audio, code, err := t.bindings.synthesizePhonemes(t.handle, phonemes, options)
+	runtime.KeepAlive(t)
+	if code < 0 {
+		return Audio{}, fmt.Errorf(
+			"moonshine: synthesize phonemes: %w",
+			nativeError(code, t.bindings.errorToString(code)),
+		)
+	}
+	if err != nil {
+		return Audio{}, fmt.Errorf("moonshine: copy phoneme synthesis audio: %w", err)
 	}
 	return audio, nil
 }
