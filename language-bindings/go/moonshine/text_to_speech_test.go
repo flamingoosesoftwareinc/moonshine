@@ -8,13 +8,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const rawErrorInvalidHandle int32 = -2
+
 type fakeTextToSpeechBindings struct {
-	handle       int32
-	errorMessage string
-	languages    []string
-	filenames    [][]string
-	options      [][]Option
-	freed        []int32
+	handle            int32
+	errorMessage      string
+	languages         []string
+	filenames         [][]string
+	options           [][]Option
+	freed             []int32
+	audio             Audio
+	synthesizeCode    int32
+	synthesizeErr     error
+	texts             []string
+	synthesizeOptions [][]Option
+}
+
+func (f *fakeTextToSpeechBindings) synthesize(_ int32, text string, options []Option) (Audio, int32, error) {
+	f.texts = append(f.texts, text)
+	f.synthesizeOptions = append(f.synthesizeOptions, append([]Option(nil), options...))
+	return f.audio, f.synthesizeCode, f.synthesizeErr
 }
 
 func (f *fakeTextToSpeechBindings) createTTSFromFiles(language string, filenames []string, options []Option) int32 {
@@ -114,4 +127,61 @@ func TestTextToSpeechCloseIsConcurrentAndIdempotent(t *testing.T) {
 	wait.Wait()
 
 	assert.Equal(t, []int32{42}, bindings.freed)
+}
+
+func TestTextToSpeechSynthesizeReturnsGoOwnedAudio(t *testing.T) {
+	want := Audio{Samples: []float32{0.25, -0.5}, SampleRate: 24000}
+	bindings := &fakeTextToSpeechBindings{handle: 42, audio: want}
+	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
+	options := []Option{{Name: "speed", Value: "1.5"}}
+
+	got, err := synthesizer.Synthesize("Hello world!", options...)
+
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	assert.Equal(t, []string{"Hello world!"}, bindings.texts)
+	assert.Equal(t, [][]Option{options}, bindings.synthesizeOptions)
+}
+
+func TestTextToSpeechSynthesizeMapsNativeErrorToSentinel(t *testing.T) {
+	bindings := &fakeTextToSpeechBindings{
+		handle:         42,
+		synthesizeCode: rawErrorInvalidHandle,
+		errorMessage:   "Invalid handle",
+	}
+	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
+
+	_, err = synthesizer.Synthesize("Hello")
+
+	require.ErrorIs(t, err, ErrInvalidHandle)
+}
+
+func TestTextToSpeechSynthesizeRejectsInvalidInput(t *testing.T) {
+	bindings := &fakeTextToSpeechBindings{handle: 42}
+	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, synthesizer.Close()) })
+
+	_, err = synthesizer.Synthesize("")
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	_, err = synthesizer.Synthesize("bad\x00text")
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	_, err = synthesizer.Synthesize("hello", Option{})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Empty(t, bindings.texts)
+}
+
+func TestTextToSpeechSynthesizeAfterClose(t *testing.T) {
+	bindings := &fakeTextToSpeechBindings{handle: 42}
+	synthesizer, err := newTextToSpeechFromFiles(bindings, "en_us", nil)
+	require.NoError(t, err)
+	require.NoError(t, synthesizer.Close())
+
+	_, err = synthesizer.Synthesize("Hello")
+
+	require.ErrorIs(t, err, ErrClosed)
 }

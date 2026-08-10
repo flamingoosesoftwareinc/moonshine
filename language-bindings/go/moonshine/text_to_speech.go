@@ -5,12 +5,14 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/moonshine-ai/moonshine/language-bindings/go/raw"
 )
 
 type textToSpeechBindings interface {
 	createTTSFromFiles(language string, filenames []string, options []Option) int32
+	synthesize(handle int32, text string, options []Option) (Audio, int32, error)
 	freeTTS(handle int32)
 	errorToString(code int32) string
 }
@@ -31,6 +33,38 @@ func (rawTextToSpeechBindings) createTTSFromFiles(language string, filenames []s
 
 func (rawTextToSpeechBindings) freeTTS(handle int32) {
 	raw.MoonshineFreeTtsSynthesizer(handle)
+}
+
+func (rawTextToSpeechBindings) synthesize(handle int32, text string, options []Option) (Audio, int32, error) {
+	converted := rawOptions(options)
+	output := [][]float32{nil}
+	sizes := []uint64{0}
+	sampleRates := []int32{0}
+	code := raw.MoonshineTextToSpeech(
+		handle,
+		text,
+		converted,
+		uint64(len(converted)),
+		output,
+		sizes,
+		sampleRates,
+	)
+	pointer := unsafe.SliceData(output[0])
+	if pointer != nil {
+		defer raw.MoonshineFreeBuffer(unsafe.Pointer(pointer))
+	}
+	if code < 0 {
+		return Audio{}, code, nil
+	}
+	if sizes[0] > uint64(^uint(0)>>1) {
+		return Audio{}, code, fmt.Errorf("audio sample count %d exceeds addressable memory", sizes[0])
+	}
+	if sizes[0] > 0 && pointer == nil {
+		return Audio{}, code, fmt.Errorf("native synthesis returned %d samples with a nil buffer", sizes[0])
+	}
+
+	samples := append([]float32(nil), unsafe.Slice(pointer, int(sizes[0]))...)
+	return Audio{Samples: samples, SampleRate: int(sampleRates[0])}, code, nil
 }
 
 func (rawTextToSpeechBindings) errorToString(code int32) string {
@@ -105,6 +139,39 @@ func (t *TextToSpeech) Close() error {
 		t.bindings.freeTTS(t.handle)
 	})
 	return nil
+}
+
+// Synthesize converts text into mono float-PCM audio. The returned samples are
+// owned by Go and remain valid after later calls and after Close.
+func (t *TextToSpeech) Synthesize(text string, options ...Option) (Audio, error) {
+	if t == nil {
+		return Audio{}, ErrClosed
+	}
+	if text == "" || strings.IndexByte(text, 0) >= 0 {
+		return Audio{}, fmt.Errorf("invalid TTS text: %w", ErrInvalidArgument)
+	}
+	if err := validateOptions(options); err != nil {
+		return Audio{}, err
+	}
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.closed {
+		return Audio{}, ErrClosed
+	}
+
+	audio, code, err := t.bindings.synthesize(t.handle, text, options)
+	runtime.KeepAlive(t)
+	if code < 0 {
+		return Audio{}, fmt.Errorf(
+			"moonshine: synthesize speech: %w",
+			nativeError(code, t.bindings.errorToString(code)),
+		)
+	}
+	if err != nil {
+		return Audio{}, fmt.Errorf("moonshine: copy synthesized audio: %w", err)
+	}
+	return audio, nil
 }
 
 func (t *TextToSpeech) finalize() {
