@@ -51,6 +51,33 @@ func TestNativeTranscriberRejectsMissingModelPath(t *testing.T) {
 	assert.Nil(t, transcriber)
 }
 
+func TestNativeStreamLifecycle(t *testing.T) {
+	transcriber, err := NewTranscriber(tinyEnglishModelPath(t), ModelArchTiny)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, transcriber.Close()) })
+
+	stream, err := transcriber.NewStream()
+	require.NoError(t, err)
+	require.NoError(t, stream.Start())
+	require.NoError(t, stream.Stop())
+	require.NoError(t, stream.Close())
+	require.NoError(t, stream.Close())
+}
+
+func TestNativeStreamAcceptsSpellingMode(t *testing.T) {
+	transcriber, err := NewTranscriber(tinyEnglishModelPath(t), ModelArchTiny)
+	require.NoError(t, err)
+
+	stream, err := transcriber.NewStream(FlagSpellingMode)
+	require.NoError(t, err)
+	require.NoError(t, stream.Start())
+	require.NoError(t, stream.Stop())
+
+	// The parent owns any stream left open and must release it first.
+	require.NoError(t, transcriber.Close())
+	require.ErrorIs(t, stream.Start(), ErrClosed)
+}
+
 func TestNativeTranscriberEmptyAudio(t *testing.T) {
 	transcriber, err := NewTranscriber(tinyEnglishModelPath(t), ModelArchTiny)
 	require.NoError(t, err)
